@@ -3,10 +3,12 @@
   "checkpoint_id": "17790384bf09",
   "strategy": "manual-commit",
   "branch": "merge-radar",
-  "checkpoints_count": 1,
+  "checkpoints_count": 2,
   "files_touched": [
     "internal/cli/help.go",
     "internal/cli/help_test.go",
+    "internal/cli/mergeradar.go",
+    "internal/cli/mergeradar_test.go",
     "internal/cli/root.go"
   ],
   "sessions": [
@@ -16,13 +18,20 @@
       "compact_transcript": "/17/790384bf09/0/transcript.jsonl",
       "content_hash": "/17/790384bf09/0/content_hash.txt",
       "prompt": "/17/790384bf09/0/prompt.txt"
+    },
+    {
+      "metadata": "/17/790384bf09/1/metadata.json",
+      "transcript": "/17/790384bf09/1/full.jsonl",
+      "compact_transcript": "/17/790384bf09/1/transcript.jsonl",
+      "content_hash": "/17/790384bf09/1/content_hash.txt",
+      "prompt": "/17/790384bf09/1/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 34,
-    "cache_creation_tokens": 27926,
-    "cache_read_tokens": 41183,
-    "output_tokens": 644,
-    "api_call_count": 2
+    "input_tokens": 68,
+    "cache_creation_tokens": 53440,
+    "cache_read_tokens": 82324,
+    "output_tokens": 1458,
+    "api_call_count": 4
   }
 }
