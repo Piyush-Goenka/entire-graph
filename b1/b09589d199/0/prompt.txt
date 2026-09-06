@@ -1,0 +1,1 @@
+You are recording checkpoint work for MergeRadar in this Entire-enabled repo. Read /Users/piyushgoenka/Desktop/New-Plans/Hackathons/bengalurutechweek/commits/6-v1store.txt and internal/gitutil/checkpoint_refs.go. In four sentences state the two checkpoint stores, why the reader missed this repository's own checkpoints, what FindCheckpoint does, and what the new test proves.
