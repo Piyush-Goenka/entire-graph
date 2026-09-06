@@ -91,14 +91,14 @@ func readCheckpointIntents(ctx context.Context, repo, commit, checkpointID strin
 	missing := func(note string) []CheckpointIntent {
 		return []CheckpointIntent{{CheckpointID: checkpointID, Commit: commit, Source: IntentSourceMissing, Note: note}}
 	}
-	ref, ok, err := gitutil.CheckpointRef(ctx, repo, checkpointID)
+	loc, ok, err := gitutil.FindCheckpoint(ctx, repo, checkpointID)
 	if err != nil {
 		return nil, fmt.Errorf("resolve checkpoint %s: %w", checkpointID, err)
 	}
 	if !ok {
-		return missing("checkpoint ref is not present locally; fetch refs/entire/checkpoints/* from the remote"), nil
+		return missing("checkpoint is not present locally; fetch refs/entire/checkpoints/* or the entire/checkpoints/v1 branch from the remote"), nil
 	}
-	files, err := gitutil.ListFiles(ctx, repo, ref)
+	files, err := gitutil.ListFiles(ctx, repo, loc.Tree())
 	if err != nil {
 		return nil, fmt.Errorf("list checkpoint %s: %w", checkpointID, err)
 	}
@@ -116,7 +116,7 @@ func readCheckpointIntents(ctx context.Context, repo, commit, checkpointID strin
 	var out []CheckpointIntent
 	for _, metaPath := range sessionMetas {
 		intent := CheckpointIntent{CheckpointID: checkpointID, Commit: commit, Source: IntentSourceMissing}
-		content, found, err := gitutil.ShowFile(ctx, repo, ref, metaPath)
+		content, found, err := gitutil.ShowFile(ctx, repo, loc.Rev, loc.Path(metaPath))
 		if err != nil {
 			return nil, fmt.Errorf("read %s from checkpoint %s: %w", metaPath, checkpointID, err)
 		}
@@ -143,7 +143,7 @@ func readCheckpointIntents(ctx context.Context, repo, commit, checkpointID strin
 		}
 
 		promptPath := strings.TrimSuffix(metaPath, "metadata.json") + "prompt.txt"
-		prompt, found, err := gitutil.ShowFile(ctx, repo, ref, promptPath)
+		prompt, found, err := gitutil.ShowFile(ctx, repo, loc.Rev, loc.Path(promptPath))
 		if err != nil {
 			return nil, fmt.Errorf("read %s from checkpoint %s: %w", promptPath, checkpointID, err)
 		}

@@ -159,7 +159,10 @@ func TestAnalyzeMergeFollowsIndirectReferenceAtDepthTwo(t *testing.T) {
 // refs backend (root metadata.json plus one session directory) and points
 // refs/entire/checkpoints/<shard>/<id> at it. summary may be empty to
 // exercise the prompt fallback.
-func writeFakeCheckpoint(t *testing.T, repo, id, summary, prompt string, filesTouched []string) {
+// fakeCheckpointTree writes a checkpoint tree shaped like Entire's: a root
+// metadata.json plus one session directory holding metadata.json and
+// prompt.txt. It returns the tree id.
+func fakeCheckpointTree(t *testing.T, repo, id, summary, prompt string, filesTouched []string) string {
 	t.Helper()
 	quoted := make([]string, 0, len(filesTouched))
 	for _, f := range filesTouched {
@@ -177,10 +180,57 @@ func writeFakeCheckpoint(t *testing.T, repo, id, summary, prompt string, filesTo
 	sessionBlob := gitInput(t, repo, session, "hash-object", "-w", "--stdin")
 	promptBlob := gitInput(t, repo, prompt, "hash-object", "-w", "--stdin")
 	sessionTree := gitInput(t, repo, fmt.Sprintf("100644 blob %s\tmetadata.json\n100644 blob %s\tprompt.txt\n", sessionBlob, promptBlob), "mktree")
-	rootTree := gitInput(t, repo, fmt.Sprintf("100644 blob %s\tmetadata.json\n040000 tree %s\t1\n", rootBlob, sessionTree), "mktree")
-	commit := gitInput(t, repo, "", "commit-tree", rootTree, "-m", "checkpoint "+id)
+	return gitInput(t, repo, fmt.Sprintf("100644 blob %s\tmetadata.json\n040000 tree %s\t1\n", rootBlob, sessionTree), "mktree")
+}
+
+// writeFakeCheckpoint stores a checkpoint the way the refs store does: one ref
+// per checkpoint, sharded by the last two characters of its id.
+func writeFakeCheckpoint(t *testing.T, repo, id, summary, prompt string, filesTouched []string) {
+	t.Helper()
+	tree := fakeCheckpointTree(t, repo, id, summary, prompt, filesTouched)
+	commit := gitInput(t, repo, "", "commit-tree", tree, "-m", "checkpoint "+id)
 	shard := id[len(id)-2:]
 	git(t, repo, "update-ref", "refs/entire/checkpoints/"+shard+"/"+id, commit)
+}
+
+// writeFakeCheckpointV1 stores a checkpoint the way the shared
+// entire/checkpoints/v1 branch does: under <first two chars>/<rest of id>/ in
+// one tree for the whole repository.
+func writeFakeCheckpointV1(t *testing.T, repo, id, summary, prompt string, filesTouched []string) {
+	t.Helper()
+	tree := fakeCheckpointTree(t, repo, id, summary, prompt, filesTouched)
+	rest := gitInput(t, repo, fmt.Sprintf("040000 tree %s\t%s\n", tree, id[2:]), "mktree")
+	shard := gitInput(t, repo, fmt.Sprintf("040000 tree %s\t%s\n", rest, id[:2]), "mktree")
+	commit := gitInput(t, repo, "", "commit-tree", shard, "-m", "checkpoints v1")
+	git(t, repo, "update-ref", "refs/heads/entire/checkpoints/v1", commit)
+}
+
+func TestCheckpointIntentsReadsTheSharedV1Branch(t *testing.T) {
+	repo := radarRepo(t, map[string]string{"pricing.go": radarBasePricing, "invoice.go": radarBaseInvoice})
+
+	// Mirror-connected repositories keep their checkpoints on one shared
+	// branch with 12-character ids sharded by the first two characters.
+	const id = "17790384bf09"
+	writeFakeCheckpointV1(t, repo, id, "Convert pricing to rupees", "please make Price return rupees", []string{"pricing.go"})
+	radarBranch(t, repo, "rupees", map[string]string{"pricing.go": radarRupees}, "pricing in rupees", "Entire-Checkpoint: "+id)
+
+	got, err := CheckpointIntents(context.Background(), repo, "main", "rupees")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Source != IntentSourceSummary || got[0].Intent != "Convert pricing to rupees" || got[0].CheckpointID != id {
+		t.Fatalf("v1 branch intent wrong: %+v", got)
+	}
+
+	// A checkpoint in neither store is reported, and the note names both.
+	radarBranch(t, repo, "orphan", map[string]string{"invoice.go": radarInvoicing}, "invoicing", "Entire-Checkpoint: deadbeef0000")
+	orphan, err := CheckpointIntents(context.Background(), repo, "main", "orphan")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(orphan) != 1 || orphan[0].Source != IntentSourceMissing || !strings.Contains(orphan[0].Note, "v1") {
+		t.Fatalf("orphan checkpoint should be missing with a note naming both stores, got %+v", orphan)
+	}
 }
 
 func TestCheckpointIntentsReadsSummaryAndFallsBackToPrompt(t *testing.T) {
