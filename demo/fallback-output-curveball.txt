@@ -1,0 +1,73 @@
+== scenario units
+
+-- agent A, branch pricing-rupees (Price() and Money() move from paise to rupees):
+  ok  	example.com/stall	(cached)
+            CHAI STALL
+     -----------------------
+     chai              10.00
+     samosa            15.00
+     -----------------------
+     subtotal          25.00
+     GST 5%             1.00
+     TOTAL             26.00
+
+-- agent B, branch loyalty-points (loyalty points computed from Subtotal(), assuming paise):
+  ok  	example.com/stall	(cached)
+            CHAI STALL
+     -----------------------
+     chai              10.00
+     samosa            15.00
+     -----------------------
+     subtotal          25.00
+     GST 5%             1.25
+     TOTAL             26.25
+
+== git merge pricing-rupees + loyalty-points:
+  clean, no conflict markers
+
+== merged tree: receipt, then the same tests
+            CHAI STALL
+     -----------------------
+     chai              10.00
+     samosa            15.00
+     -----------------------
+     subtotal          25.00
+     GST 5%             1.00
+     TOTAL             26.00
+  --- FAIL: TestPointsAwardsOnePointPerTenRupees (0.00s)
+      loyalty_test.go:7: Points(chai, samosa) = 0, want 2
+  FAIL
+  FAIL	example.com/stall	0.346s
+  FAIL
+
+== entire graph merge-radar pricing-rupees loyalty-points --verify
+
+MergeRadar  base f674b5b  depth 2
+  A  pricing-rupees           044f17b  5 files, 9 entities changed
+     intent "Convert a small Go billing module (pricing.go, format.go) from paise-based to
+             whole-rupee-based money handling, updating associated tests, without touching
+             tax/discount/receipt logic or creating new files."
+            checkpoint 01M1TTABNG6JS8AHPBMHY2P4K4 · commit 044f17b · from summary · Claude Code · matched by files_touched
+  B  loyalty-points           3032d9a  2 files, 3 entities changed
+     intent "Add a loyalty points feature (loyalty.go with Points(items []string) int) to the stall
+             package using TDD, without modifying existing files or committing."
+            checkpoint 01M1TT9X54TWK89D0YR36DPW68 · commit 3032d9a · from summary · Claude Code · matched by files_touched
+  analysis PARTIAL: 1 ambiguous name(s)
+    - ambiguous name: Subtotal has 2 definitions on loyalty-points (function Subtotal in pricing.go, field Receipt.Subtotal in receipt.go); findings matched by it are heuristic
+
+1 potential conflict(s): 0 on structural evidence, 1 on heuristic evidence. All potential until a merged tree is actually tested.
+
+[1] DEPENDENCY  heuristic evidence · potential until verified
+    evidence    ambiguous name: 2 definitions of Subtotal on loyalty-points (function Subtotal in pricing.go, field Receipt.Subtotal in receipt.go); the reference index matches by short name and cannot say which one the consumer meant
+    changed on pricing-rupees function Price  pricing.go:5  body_changed
+    consumer on loyalty-points function Points  loyalty.go:9  added  via Subtotal
+    => pricing-rupees changed function Price in pricing.go (body_changed); loyalty-points added function Points in loyalty.go, which references it through Subtotal. Each branch's tests ran against the other's old code, so this combination has never executed.
+
+verification REPRODUCED: go test ./... failed on the merged tree 56f05a9
+  the tests fail on the merged tree although each branch passes on its own
+    --- FAIL: TestPointsAwardsOnePointPerTenRupees (0.00s)
+        loyalty_test.go:7: Points(chai, samosa) = 0, want 2
+    FAIL
+    FAIL	example.com/stall	0.319s
+    ?   	example.com/stall/cmd/stall	[no test files]
+    FAIL

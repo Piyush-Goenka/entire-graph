@@ -1,0 +1,98 @@
+# MergeRadar demo, recorded rehearsal, scenario format, 06 Sep 2026 12:00 IST.
+# Chai-stall billing app (demo/make-app.sh), two real Claude Code agents in two worktrees, real Entire checkpoints and AI summaries.
+# Produced by: demo/run-agents.sh <dir> prepare format && ... auto && ... show   (about 85 seconds). Punctuation normalised.
+
+---- AUTO 12:00:26
+== scenario format: two agents in parallel, Entire recording each session
+   A on indian-money-format: Money() prints the rupee sign with Indian digit grouping
+   B on csv-export: CSV export that parses Money() output back into numbers
+agent B finished
+agent B committed: 4dadcf8 export: CSV for the accountant
+agent A finished
+agent A committed: 2ca7d4a format: Indian currency formatting
+
+== AI summaries for both checkpoints (entire checkpoint explain --generate)
+agent A: summary generated for 01M1TPM1YWCRH5H8D5EGQZ1KHP
+agent B: summary generated for 01M1TPKZG40P75917AJ2FSC49A
+
+== branch tips and their checkpoints:
+  2ca7d4a (indian-money-format) format: Indian currency formatting
+      Entire-Checkpoint: 01M1TPM1YWCRH5H8D5EGQZ1KHP
+
+  4dadcf8 (csv-export) export: CSV for the accountant
+      Entire-Checkpoint: 01M1TPKZG40P75917AJ2FSC49A
+
+  14bcb83 (HEAD -> main) chore: enable Entire checkpoints
+      Entire-Checkpoint: 
+---- SHOW 12:01:36
+== scenario format
+
+-- agent A, branch indian-money-format (Money() prints the rupee sign with Indian digit grouping):
+  ok  	example.com/stall	(cached)
+            CHAI STALL
+     -----------------------
+     chai             ₹10.00
+     samosa           ₹15.00
+     -----------------------
+     subtotal         ₹25.00
+     GST 5%            ₹1.25
+     TOTAL            ₹26.25
+
+-- agent B, branch csv-export (CSV export that parses Money() output back into numbers):
+  ok  	example.com/stall	(cached)
+            CHAI STALL
+     -----------------------
+     chai              10.00
+     samosa            15.00
+     -----------------------
+     subtotal          25.00
+     GST 5%             1.25
+     TOTAL             26.25
+
+== git merge indian-money-format + csv-export:
+  clean, no conflict markers
+
+== merged tree: receipt, then the same tests
+            CHAI STALL
+     -----------------------
+     chai             ₹10.00
+     samosa           ₹15.00
+     -----------------------
+     subtotal         ₹25.00
+     GST 5%            ₹1.25
+     TOTAL            ₹26.25
+  --- FAIL: TestExportCSVAmountsParseAndTotalIs2625 (0.00s)
+      export_test.go:25: amount in line "chai,₹10.00" does not parse: strconv.ParseFloat: parsing "₹10.00": invalid syntax
+  FAIL
+  FAIL	example.com/stall	0.404s
+  FAIL
+
+== entire graph merge-radar indian-money-format csv-export
+
+MergeRadar  base 14bcb83  depth 2
+  A  indian-money-format      2ca7d4a  3 files, 4 entities changed
+     intent "Update Money() in format.go to prefix a rupee sign and use Indian digit grouping (e.g.,
+             ₹1,23,456.78), updating format_test.go and receipt_test.go as needed, without touching
+             pricing.go, tax.go, receipt.go, catalog.go, or committing."
+            checkpoint 01M1TPM1YWCRH5H8D5EGQZ1KHP · commit 2ca7d4a · from summary · Claude Code · matched by files_touched
+  B  csv-export               4dadcf8  2 files, 2 entities changed
+     intent "Add a test-driven CSV export feature (ExportCSV) for the accountant, covering a
+             chai+samosa receipt with no coupon, without touching existing files or committing."
+            checkpoint 01M1TPKZG40P75917AJ2FSC49A · commit 4dadcf8 · from summary · Claude Code · matched by files_touched
+
+2 potential conflict(s). Labelled potential until a merged tree is actually tested.
+
+[1] DEPENDENCY  potential
+    changed on indian-money-format function Money  format.go:11  body_changed
+    consumer on csv-export   function ExportCSV  export.go:10  added
+    => indian-money-format changed function Money in format.go (body_changed); csv-export added function ExportCSV in export.go, which references it. Each branch's tests ran against the other's old code, so this combination has never executed.
+
+[2] DEPENDENCY  potential
+    changed on indian-money-format function Money  format.go:11  body_changed
+    consumer on csv-export   function TestExportCSVAmountsParseAndTotalIs2625  export_test.go:9  added  via ExportCSV
+    => indian-money-format changed function Money in format.go (body_changed); csv-export added function TestExportCSVAmountsParseAndTotalIs2625 in export_test.go, which references it through ExportCSV. Each branch's tests ran against the other's old code, so this combination has never executed.
+
+Verify before trusting this report:
+  git merge-tree --write-tree indian-money-format csv-export    # scratch merge, no checkout
+  then run the tests that touch the files listed above against that tree.
+END 12:01:42 exit=0

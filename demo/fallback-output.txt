@@ -1,0 +1,93 @@
+# MergeRadar demo, recorded rehearsal, scenario units, 06 Sep 2026 12:00 IST.
+# Chai-stall billing app (demo/make-app.sh), two real Claude Code agents in two worktrees, real Entire checkpoints and AI summaries.
+# Produced by: demo/run-agents.sh <dir> prepare units && ... auto && ... show   (about 85 seconds). Punctuation normalised.
+
+---- AUTO 12:00:19
+== scenario units: two agents in parallel, Entire recording each session
+   A on pricing-rupees: Price() and Money() move from paise to rupees
+   B on loyalty-points: loyalty points computed from Subtotal(), assuming paise
+agent B finished
+agent B committed: 32a3815 loyalty: points from the subtotal
+agent A finished
+agent A committed: 0b101ac pricing: rupees instead of paise
+
+== AI summaries for both checkpoints (entire checkpoint explain --generate)
+agent B: summary generated for 01M1TPKNE8QWWA3VHN3CACSW91
+agent A: summary generated for 01M1TPM3SYFPK6B6TXSV1Q046Y
+
+== branch tips and their checkpoints:
+  0b101ac (pricing-rupees) pricing: rupees instead of paise
+      Entire-Checkpoint: 01M1TPM3SYFPK6B6TXSV1Q046Y
+
+  32a3815 (loyalty-points) loyalty: points from the subtotal
+      Entire-Checkpoint: 01M1TPKNE8QWWA3VHN3CACSW91
+
+  8c092da (HEAD -> main) chore: enable Entire checkpoints
+      Entire-Checkpoint: 
+---- SHOW 12:01:34
+== scenario units
+
+-- agent A, branch pricing-rupees (Price() and Money() move from paise to rupees):
+  ok  	example.com/stall	(cached)
+            CHAI STALL
+     -----------------------
+     chai              10.00
+     samosa            15.00
+     -----------------------
+     subtotal          25.00
+     GST 5%             1.00
+     TOTAL             26.00
+
+-- agent B, branch loyalty-points (loyalty points computed from Subtotal(), assuming paise):
+  ok  	example.com/stall	(cached)
+            CHAI STALL
+     -----------------------
+     chai              10.00
+     samosa            15.00
+     -----------------------
+     subtotal          25.00
+     GST 5%             1.25
+     TOTAL             26.25
+
+== git merge pricing-rupees + loyalty-points:
+  clean, no conflict markers
+
+== merged tree: receipt, then the same tests
+            CHAI STALL
+     -----------------------
+     chai              10.00
+     samosa            15.00
+     -----------------------
+     subtotal          25.00
+     GST 5%             1.00
+     TOTAL             26.00
+  --- FAIL: TestPointsAwardsOnePerTenRupees (0.00s)
+      loyalty_test.go:8: Points(chai, samosa) = 0, want 2
+  FAIL
+  FAIL	example.com/stall	0.499s
+  FAIL
+
+== entire graph merge-radar pricing-rupees loyalty-points
+
+MergeRadar  base 8c092da  depth 2
+  A  pricing-rupees           0b101ac  5 files, 9 entities changed
+     intent "Convert a Go stall-pricing codebase from paise to whole-rupee units by changing Price()
+             and Money() semantics and updating dependent tests, without touching
+             catalog/tax/discount/receipt logic files or committing."
+            checkpoint 01M1TPM3SYFPK6B6TXSV1Q046Y · commit 0b101ac · from summary · Claude Code · matched by files_touched
+  B  loyalty-points           32a3815  2 files, 3 entities changed
+     intent "Add a loyalty points feature (loyalty.go with a Points function based on existing
+             Subtotal logic) using TDD, without touching existing files or committing."
+            checkpoint 01M1TPKNE8QWWA3VHN3CACSW91 · commit 32a3815 · from summary · Claude Code · matched by files_touched
+
+1 potential conflict(s). Labelled potential until a merged tree is actually tested.
+
+[1] DEPENDENCY  potential
+    changed on pricing-rupees function Price  pricing.go:5  body_changed
+    consumer on loyalty-points function Points  loyalty.go:9  added  via Subtotal
+    => pricing-rupees changed function Price in pricing.go (body_changed); loyalty-points added function Points in loyalty.go, which references it through Subtotal. Each branch's tests ran against the other's old code, so this combination has never executed.
+
+Verify before trusting this report:
+  git merge-tree --write-tree pricing-rupees loyalty-points    # scratch merge, no checkout
+  then run the tests that touch the files listed above against that tree.
+END 12:01:41 exit=0
