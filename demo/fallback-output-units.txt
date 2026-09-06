@@ -1,30 +1,7 @@
-# MergeRadar demo, recorded rehearsal, scenario units, 06 Sep 2026 12:00 IST.
+# MergeRadar demo, scenario units, recorded 06 Sep 2026 13:26 IST with build a0ab27d (post-curveball).
 # Chai-stall billing app (demo/make-app.sh), two real Claude Code agents in two worktrees, real Entire checkpoints and AI summaries.
-# Produced by: demo/run-agents.sh <dir> prepare units && ... auto && ... show   (about 85 seconds). Punctuation normalised.
+# Reveal: demo/run-agents.sh <dir> show. Punctuation normalised.
 
----- AUTO 12:00:19
-== scenario units: two agents in parallel, Entire recording each session
-   A on pricing-rupees: Price() and Money() move from paise to rupees
-   B on loyalty-points: loyalty points computed from Subtotal(), assuming paise
-agent B finished
-agent B committed: 32a3815 loyalty: points from the subtotal
-agent A finished
-agent A committed: 0b101ac pricing: rupees instead of paise
-
-== AI summaries for both checkpoints (entire checkpoint explain --generate)
-agent B: summary generated for 01M1TPKNE8QWWA3VHN3CACSW91
-agent A: summary generated for 01M1TPM3SYFPK6B6TXSV1Q046Y
-
-== branch tips and their checkpoints:
-  0b101ac (pricing-rupees) pricing: rupees instead of paise
-      Entire-Checkpoint: 01M1TPM3SYFPK6B6TXSV1Q046Y
-
-  32a3815 (loyalty-points) loyalty: points from the subtotal
-      Entire-Checkpoint: 01M1TPKNE8QWWA3VHN3CACSW91
-
-  8c092da (HEAD -> main) chore: enable Entire checkpoints
-      Entire-Checkpoint: 
----- SHOW 12:01:34
 == scenario units
 
 -- agent A, branch pricing-rupees (Price() and Money() move from paise to rupees):
@@ -64,10 +41,10 @@ agent A: summary generated for 01M1TPM3SYFPK6B6TXSV1Q046Y
   --- FAIL: TestPointsAwardsOnePerTenRupees (0.00s)
       loyalty_test.go:8: Points(chai, samosa) = 0, want 2
   FAIL
-  FAIL	example.com/stall	0.499s
+  FAIL	example.com/stall	0.362s
   FAIL
 
-== entire graph merge-radar pricing-rupees loyalty-points
+== entire graph merge-radar pricing-rupees loyalty-points --verify
 
 MergeRadar  base 8c092da  depth 2
   A  pricing-rupees           0b101ac  5 files, 9 entities changed
@@ -79,15 +56,22 @@ MergeRadar  base 8c092da  depth 2
      intent "Add a loyalty points feature (loyalty.go with a Points function based on existing
              Subtotal logic) using TDD, without touching existing files or committing."
             checkpoint 01M1TPKNE8QWWA3VHN3CACSW91 · commit 32a3815 · from summary · Claude Code · matched by files_touched
+  analysis PARTIAL: 1 ambiguous name(s)
+    - ambiguous name: Subtotal has 2 definitions on loyalty-points (function Subtotal in pricing.go, field Receipt.Subtotal in receipt.go); findings matched by it are heuristic
 
-1 potential conflict(s). Labelled potential until a merged tree is actually tested.
+1 potential conflict(s): 0 on structural evidence, 1 on heuristic evidence. All potential until a merged tree is actually tested.
 
-[1] DEPENDENCY  potential
+[1] DEPENDENCY  heuristic evidence · potential until verified
+    evidence    ambiguous name: 2 definitions of Subtotal on loyalty-points (function Subtotal in pricing.go, field Receipt.Subtotal in receipt.go); the reference index matches by short name and cannot say which one the consumer meant
     changed on pricing-rupees function Price  pricing.go:5  body_changed
     consumer on loyalty-points function Points  loyalty.go:9  added  via Subtotal
     => pricing-rupees changed function Price in pricing.go (body_changed); loyalty-points added function Points in loyalty.go, which references it through Subtotal. Each branch's tests ran against the other's old code, so this combination has never executed.
 
-Verify before trusting this report:
-  git merge-tree --write-tree pricing-rupees loyalty-points    # scratch merge, no checkout
-  then run the tests that touch the files listed above against that tree.
-END 12:01:41 exit=0
+verification REPRODUCED: go test ./... failed on the merged tree e03a40f
+  the tests fail on the merged tree although each branch passes on its own
+    --- FAIL: TestPointsAwardsOnePerTenRupees (0.00s)
+        loyalty_test.go:8: Points(chai, samosa) = 0, want 2
+    FAIL
+    FAIL	example.com/stall	0.321s
+    ?   	example.com/stall/cmd/stall	[no test files]
+    FAIL

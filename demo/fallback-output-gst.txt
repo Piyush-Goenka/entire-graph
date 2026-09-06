@@ -1,34 +1,11 @@
-# MergeRadar demo, recorded rehearsal, scenario gst, 06 Sep 2026 12:00 IST.
+# MergeRadar demo, scenario gst, recorded 06 Sep 2026 13:26 IST with build a0ab27d (post-curveball).
 # Chai-stall billing app (demo/make-app.sh), two real Claude Code agents in two worktrees, real Entire checkpoints and AI summaries.
-# Produced by: demo/run-agents.sh <dir> prepare gst && ... auto && ... show   (about 85 seconds). Punctuation normalised.
+# Reveal: demo/run-agents.sh <dir> show. Punctuation normalised.
 
----- AUTO 12:00:23
-== scenario gst: two agents in parallel, Entire recording each session
-   A on tax-inclusive-prices: prices become tax-inclusive MRP; GST() extracts the included tax
-   B on party-quotes: party quotes that add GST on top of the subtotal
-agent B finished
-agent B committed: 3f2984f quotes: party quote with GST and service charge
-agent A finished
-agent A committed: 3c261aa pricing: tax-inclusive MRP
-
-== AI summaries for both checkpoints (entire checkpoint explain --generate)
-agent B: summary generated for 01M1TPM3GTQB5BTZW9R0DRT6SP
-agent A: summary generated for 01M1TPM9H98ETWR6VGZWYYMR0S
-
-== branch tips and their checkpoints:
-  3c261aa (tax-inclusive-prices) pricing: tax-inclusive MRP
-      Entire-Checkpoint: 01M1TPM9H98ETWR6VGZWYYMR0S
-
-  3f2984f (party-quotes) quotes: party quote with GST and service charge
-      Entire-Checkpoint: 01M1TPM3GTQB5BTZW9R0DRT6SP
-
-  98d0f88 (HEAD -> main) chore: enable Entire checkpoints
-      Entire-Checkpoint: 
----- SHOW 12:01:41
 == scenario gst
 
 -- agent A, branch tax-inclusive-prices (prices become tax-inclusive MRP; GST() extracts the included tax):
-  ok  	example.com/stall	0.420s
+  ok  	example.com/stall	(cached)
             CHAI STALL
      -----------------------
      chai              10.50
@@ -64,10 +41,10 @@ agent A: summary generated for 01M1TPM9H98ETWR6VGZWYYMR0S
   --- FAIL: TestPartyQuoteChargesEveryGuestPlusService (0.00s)
       quote_test.go:8: PartyQuote = 6050 paise, want 5775
   FAIL
-  FAIL	example.com/stall	0.360s
+  FAIL	example.com/stall	0.440s
   FAIL
 
-== entire graph merge-radar tax-inclusive-prices party-quotes
+== entire graph merge-radar tax-inclusive-prices party-quotes --verify
 
 MergeRadar  base 98d0f88  depth 2
   A  tax-inclusive-prices     3c261aa  5 files, 8 entities changed
@@ -81,25 +58,32 @@ MergeRadar  base 98d0f88  depth 2
              with GST plus a 10% service charge) using TDD, without modifying existing files or
              committing."
             checkpoint 01M1TPM3GTQB5BTZW9R0DRT6SP · commit 3f2984f · from summary · Claude Code · matched by files_touched
+  analysis PARTIAL: 1 ambiguous name(s)
+    - ambiguous name: Subtotal has 2 definitions on party-quotes (function Subtotal in pricing.go, field Receipt.Subtotal in receipt.go); findings matched by it are heuristic
 
-3 potential conflict(s). Labelled potential until a merged tree is actually tested.
+3 potential conflict(s): 2 on structural evidence, 1 on heuristic evidence. All potential until a merged tree is actually tested.
 
-[1] DEPENDENCY  potential
+[1] DEPENDENCY  heuristic evidence · potential until verified
+    evidence    ambiguous name: 2 definitions of Subtotal on party-quotes (function Subtotal in pricing.go, field Receipt.Subtotal in receipt.go); the reference index matches by short name and cannot say which one the consumer meant
     changed on tax-inclusive-prices function Price  pricing.go:5  body_changed
     consumer on party-quotes function PartyQuote  quote.go:9  added  via Subtotal
     => tax-inclusive-prices changed function Price in pricing.go (body_changed); party-quotes added function PartyQuote in quote.go, which references it through Subtotal. Each branch's tests ran against the other's old code, so this combination has never executed.
 
-[2] DEPENDENCY  potential
+[2] DEPENDENCY  structural evidence · potential until verified
     changed on tax-inclusive-prices function GST  tax.go:8  body_changed
     consumer on party-quotes function PartyQuote  quote.go:9  added
     => tax-inclusive-prices changed function GST in tax.go (body_changed); party-quotes added function PartyQuote in quote.go, which references it. Each branch's tests ran against the other's old code, so this combination has never executed.
 
-[3] DEPENDENCY  potential
+[3] DEPENDENCY  structural evidence · potential until verified
     changed on tax-inclusive-prices function GST  tax.go:8  body_changed
     consumer on party-quotes function TestPartyQuoteChargesEveryGuestPlusService  quote_test.go:5  added  via PartyQuote
     => tax-inclusive-prices changed function GST in tax.go (body_changed); party-quotes added function TestPartyQuoteChargesEveryGuestPlusService in quote_test.go, which references it through PartyQuote. Each branch's tests ran against the other's old code, so this combination has never executed.
 
-Verify before trusting this report:
-  git merge-tree --write-tree tax-inclusive-prices party-quotes    # scratch merge, no checkout
-  then run the tests that touch the files listed above against that tree.
-END 12:01:47 exit=0
+verification REPRODUCED: go test ./... failed on the merged tree 8f331d5
+  the tests fail on the merged tree although each branch passes on its own
+    --- FAIL: TestPartyQuoteChargesEveryGuestPlusService (0.00s)
+        quote_test.go:8: PartyQuote = 6050 paise, want 5775
+    FAIL
+    FAIL	example.com/stall	0.355s
+    ?   	example.com/stall/cmd/stall	[no test files]
+    FAIL

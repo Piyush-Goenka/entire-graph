@@ -242,6 +242,19 @@ demo/make-fixture.sh /tmp/radar-demo --fake-checkpoints   # offline fixture, lab
 ./entire-graph merge-radar pricing-rupees invoicing --repo /tmp/radar-demo --json
 ./entire-graph merge-radar pricing-rupees invoicing --repo /tmp/radar-demo --verify   # runs the merged tree's tests
 demo/make-fixture.sh /tmp/radar-demo --prove              # both branches pass alone; merged tree fails
+```
+
+Live demo with two real agents (Entire installed and logged in, Claude Code
+on PATH): builds a ten-file Go billing app, records both agent sessions as
+checkpoints, generates their AI summaries, then reveals the break.
+
+```
+demo/run-agents.sh /tmp/stall prepare units    # or gst, format, random; prints the two agent commands
+demo/run-agents.sh /tmp/stall auto             # or paste the two commands into two terminals
+demo/run-agents.sh /tmp/stall show             # branches green, merge clean, merged tests fail, MergeRadar explains
+```
+
+Recorded reveals for each scenario are in demo/fallback-output-*.txt.
 
 Curveball fixture (numpy, two real pull requests; each run takes about two minutes):
 
@@ -249,7 +262,6 @@ Curveball fixture (numpy, two real pull requests; each run takes about two minut
 cd curveball-fixture/numpy
 entire graph merge-radar pr-32497 pr-32510 --repo .            # AFTER output: curveball-fixture/after-merge-radar.txt
 entire graph merge-radar pr-32497 pr-32510 --repo . --verify   # git cannot merge the pair: "verification conflicted"
-```
 ```
 
 As an installed plugin the same command is `entire graph merge-radar ...`.
