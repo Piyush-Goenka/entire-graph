@@ -1,0 +1,41 @@
+{
+  "cli_version": "0.10.5",
+  "checkpoint_id": "17790384bf09",
+  "session_id": "541a887d-cd17-458e-b3a8-b4d9e7495419",
+  "strategy": "manual-commit",
+  "created_at": "2026-09-06T05:48:33.109334Z",
+  "branch": "merge-radar",
+  "checkpoints_count": 1,
+  "save_step_count": 1,
+  "files_touched": [
+    "internal/cli/help.go",
+    "internal/cli/help_test.go",
+    "internal/cli/root.go"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-fable-5-1",
+  "turn_id": "a47916401db4",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 34,
+    "cache_creation_tokens": 27926,
+    "cache_read_tokens": 41183,
+    "output_tokens": 644,
+    "api_call_count": 2
+  },
+  "session_metrics": {
+    "turn_count": 1
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-09-06T05:48:33.082256Z",
+    "agent_lines": 22,
+    "agent_removed": 1,
+    "human_added": 278,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 300,
+    "total_lines_changed": 301,
+    "agent_percentage": 7.641196013289036,
+    "metric_version": 2
+  }
+}

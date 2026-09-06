@@ -1,0 +1,28 @@
+{
+  "cli_version": "0.10.5",
+  "checkpoint_id": "17790384bf09",
+  "strategy": "manual-commit",
+  "branch": "merge-radar",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "internal/cli/help.go",
+    "internal/cli/help_test.go",
+    "internal/cli/root.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/17/790384bf09/0/metadata.json",
+      "transcript": "/17/790384bf09/0/full.jsonl",
+      "compact_transcript": "/17/790384bf09/0/transcript.jsonl",
+      "content_hash": "/17/790384bf09/0/content_hash.txt",
+      "prompt": "/17/790384bf09/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 34,
+    "cache_creation_tokens": 27926,
+    "cache_read_tokens": 41183,
+    "output_tokens": 644,
+    "api_call_count": 2
+  }
+}
