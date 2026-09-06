@@ -1,0 +1,64 @@
+{
+  "cli_version": "0.10.5",
+  "checkpoint_id": "13d2e12d6cab",
+  "session_id": "78fe961d-9e7c-4d52-8da4-93fbf5d46699",
+  "strategy": "manual-commit",
+  "created_at": "2026-09-06T05:47:55.534977Z",
+  "branch": "merge-radar",
+  "checkpoints_count": 1,
+  "save_step_count": 1,
+  "files_touched": [
+    "internal/gitutil/checkpoint_refs.go",
+    "internal/gitutil/merge_base.go"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-fable-5-1",
+  "turn_id": "7c303b5206d8",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 34,
+    "cache_creation_tokens": 23202,
+    "cache_read_tokens": 41226,
+    "output_tokens": 730,
+    "api_call_count": 2
+  },
+  "session_metrics": {
+    "turn_count": 1
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-09-06T05:47:55.507194Z",
+    "agent_lines": 0,
+    "agent_removed": 0,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 0,
+    "total_lines_changed": 0,
+    "agent_percentage": 0,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 1249,
+      "user_lines_removed": 1,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        "internal/cli/help.go": 19,
+        "internal/cli/help_test.go": 1,
+        "internal/cli/mergeradar.go": 215,
+        "internal/cli/mergeradar_test.go": 63,
+        "internal/cli/root.go": 2,
+        "internal/gitutil/checkpoint_refs.go": 74,
+        "internal/gitutil/merge_base.go": 15,
+        "internal/sem/mergeradar.go": 376,
+        "internal/sem/mergeradar_intent.go": 230,
+        "internal/sem/mergeradar_test.go": 254
+      },
+      "user_removed_per_file": {
+        "internal/cli/help_test.go": 1
+      }
+    }
+  ]
+}
