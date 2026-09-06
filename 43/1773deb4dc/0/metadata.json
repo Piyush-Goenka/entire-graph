@@ -15,5 +15,89 @@
     "cache_read_tokens": 13180948,
     "output_tokens": 104150,
     "api_call_count": 77
+  },
+  "summary": {
+    "intent": "Under a hackathon time crunch, follow the CURVEBALL.md card phase by phase for the MergeRadar project: reconstruct project state from Entire checkpoints, capture graph-impact evidence before editing, then implement a scoped revision (evidence classification, partial-analysis coverage reporting, and a --verify flag) using TDD, verify it against a large real-world fixture (numpy PR branches), and get to a committable, pushable, submission-ready state before the 15:00 deadline.",
+    "outcome": "Phases 1-3 and 5 were completed: reconstruction and graph-impact analysis were captured read-only, three additive features (evidence class/notes, Analysis coverage block, --verify) were implemented with 11 new tests written first and passing, verified on both the demo fixture and the numpy fixture (BEFORE/AFTER outputs), and documentation (BUILDATHON.md, CHECKPOINTS.md, curveball-fixture/README.md, commit message) was updated. The user then granted commit/push/fork-URL permission; the checkpoint 3 commit was made and the assistant moved on to generating AI checkpoint summaries and the final semantic diff, with checkpoint 4 and push still pending at transcript end.",
+    "learnings": {
+      "repo": [
+        "Entire tracks checkpoints via two stores: per-checkpoint refs and a shared entire/checkpoints/v1 branch, resolved by gitutil.FindCheckpoint",
+        "The dependents reference index (buildReferenceIndex) is a short-name index, not a semantic one — it doesn't distinguish same-named-but-different entities and can't see interface dispatch, reflection, or generated/unparsed code",
+        "The graph does not index constants as symbols (e.g. ConfidencePotential string constant), so searching for it returns no matches even though it's used at specific call sites",
+        "The graph tracks call edges only, not who reads struct fields — so text writers like writeMergeConflict that print a struct field value don't appear as 'consumers' in graph impact results",
+        "Graph queries can report 'Completeness: degraded' with parse errors/unmerged data-flow warnings, which is itself evidence for why findings need an evidence/confidence classification",
+        "help.go has a TestRegistryMatchesDispatch guard tying the CLI help registry to actual command dispatch",
+        "Markdown/prose files need special handling in semantic diff — a plain Markdown section is treated as prose and doesn't surface expected symbol mentions; using a .rst fixture was needed to get the document-filtering test to pass as intended",
+        "make-fixture.sh builds an offline demo fixture rather than there being one fixed rehearsal directory"
+      ],
+      "code": [
+        {
+          "path": "internal/sem/mergeradar.go",
+          "line": 18,
+          "finding": "ConfidencePotential is a string constant (not a graph-indexed symbol), referenced at lines 243 and 301"
+        },
+        {
+          "path": "internal/sem/mergeradar.go",
+          "line": 94,
+          "finding": "ReferencesTo: callers are dependencyConflicts and AnalyzeMerge; callee is buildReferenceIndex; returns ProviderWarning"
+        },
+        {
+          "path": "internal/sem/mergeradar.go",
+          "line": 228,
+          "finding": "directConflicts: same caller chain as dependencyConflicts but has no ProviderWarning path at all"
+        },
+        {
+          "path": "internal/sem/mergeradar.go",
+          "line": 270,
+          "finding": "dependencyConflicts is called by AnalyzeMerge, reached by runMergeRadar and 5 tests; returns MergeConflict"
+        },
+        {
+          "path": "internal/sem/dependents.go",
+          "line": 78,
+          "finding": "buildReferenceIndex has 11 direct callers (10 are dependents tests plus ReferencesTo); warnings flow back up through it"
+        },
+        {
+          "path": "internal/cli/mergeradar.go",
+          "line": 214,
+          "finding": "writeMergeConflict prints the confidence label but was invisible to graph-based call-chain impact analysis"
+        },
+        {
+          "path": "internal/cli/mergeradar.go",
+          "line": 138,
+          "finding": "'No cross-branch conflicts found' line, also invisible to graph call-edge analysis since it's a struct-field read, not a call"
+        },
+        {
+          "path": "internal/sem/provider.go",
+          "line": 278,
+          "finding": "ProviderWarning struct fields: Code, Severity, FilePath, EffectOnCompleteness, Detail"
+        }
+      ],
+      "workflow": [
+        "TDD loop used throughout: write test expecting RED, confirm it fails for the right reason, implement, confirm GREEN — applied consistently across all three Phase 3 features",
+        "When adding a new options-taking API mid-TDD, add a pass-through stub (AnalyzeMergeWithOptions) first so other new tests can fail on their own merits rather than on compile errors",
+        "A perl-based inline edit corrupted a test file's first line; had to inspect and manually repair rather than trusting the edit blindly",
+        "Ran expensive fixture captures (numpy PR branches, BEFORE/AFTER, --verify) as background bash tasks while continuing other TDD/implementation work in parallel, then checked in periodically",
+        "Building a quick throwaway repo/fixture to inspect actual tool output (e.g. semantic diff of a Markdown file) was used to debug why a test's expected behavior wasn't matching"
+      ]
+    },
+    "friction": [
+      "The literal path `../../CURVEBALL.md` given by the user did not exist; had to fall back to a CURVEBALL.md found in the working directory",
+      "Shell working directory persisted unexpectedly between Bash calls, requiring a switch to absolute paths",
+      "CURVEBALL.md changed on disk mid-session (new addendum about the fixture) requiring a pause to re-read before continuing",
+      "perl-based file edit corrupted the sem test file's first line, requiring manual inspection and repair",
+      "Markdown diff didn't surface expected symbol mentions for the document-filtering test, requiring fixture format change to .rst and a throwaway repo to debug",
+      "Two long-running background fixture jobs (numpy AFTER run, --verify run) gated final documentation and commit-readiness, creating repeated wait/check cycles under a hard 15:00 deadline",
+      "The demo rehearsal's expected 'structural' finding (Subtotal) got reclassified as 'heuristic' by the new evidence logic, changing the wording judges/audience would see versus what was rehearsed"
+    ],
+    "open_items": [
+      "Checkpoint 4 (final `entire graph diff --base main --head HEAD`, recording matches/gaps, filling BUILDATHON.md TODOs, commit, push) not yet done at transcript end",
+      "git push origin merge-radar still pending explicit go-ahead per the user's stated rule of asking before each git action",
+      "AI summaries for checkpoints 1, 2, and 6 were being generated but completion not confirmed in transcript",
+      "Fallback demo asset (screen recording or regenerated text transcript of `demo/run-agents.sh show`) not yet recorded — current fallback-output.txt predates the new evidence wording",
+      "Final 20-minute pre-submission checklist (clean-checkout build, tests green, SHA matches, no secrets in BUILDATHON.md) not yet run",
+      "Decision on which demo scenario to show (Subtotal now heuristic vs. picking a fixture with a structural finding) was left to the user, unresolved at transcript end",
+      "Codex hooks warning in `entire status` not yet approved/cleared (cosmetic, user's call)",
+      "Open architectural risks noted in DESIGN.md remain out of scope for this revision: reproduction only tested for one language, conflicts via configuration/serialized data/runtime strings still invisible, branches with no checkpoint still get an unexplained warning"
+    ]
   }
 }
