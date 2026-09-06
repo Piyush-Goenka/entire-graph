@@ -15,5 +15,24 @@
     "cache_read_tokens": 64000,
     "output_tokens": 1481,
     "api_call_count": 2
+  },
+  "summary": {
+    "intent": "Record checkpoint 4 (final implementation and verification) for the MergeRadar project by reading the checkpoint-8 commit notes and BUILDATHON.md, then producing a five-sentence structured summary covering the submitted command, final semantic diff results, verification methods, the four checkpoints, and known limitations.",
+    "outcome": "Produced the requested five-sentence checkpoint 4 statement covering the `entire graph merge-radar` command's behavior, the final semantic diff (15 files, 205 entity changes) and its coverage gaps, three-part verification (go test suite, live-agent demo with --verify, numpy real-repo check), the four checkpoints and what each proves, and the honestly-stated limitations.",
+    "learnings": {
+      "repo": [],
+      "code": [],
+      "workflow": [
+        "The 'checkpoint' documentation pattern for this hackathon project (Entire-enabled repo) requires citing a specific commit hash/short-hash pair, source evidence files (e.g. evidence/final-semantic-diff.txt/.json), and honest limitation disclosure rather than just summarizing successes."
+      ]
+    },
+    "friction": [],
+    "open_items": [
+      "Help registry (help.go/help_test.go) is a single composite literal, so entity-level diffing can't see individual new entries/flags — flagged as a graph coverage gap, not fixed.",
+      "--verify only runs tests for Go modules; other languages report 'unavailable' rather than a pass/fail.",
+      "Evidence classification is conservative, so real breaking changes can be mislabeled as 'heuristic' instead of 'structural'.",
+      "Conflicts expressed via config, serialized data, or runtime strings remain invisible to the graph.",
+      "Coverage reporting only reflects what the parser/walk failed to see, not what it never attempted to look for — a known blind spot in the tool's self-reporting."
+    ]
   }
 }
