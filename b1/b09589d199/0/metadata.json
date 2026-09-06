@@ -26,6 +26,27 @@
   "session_metrics": {
     "turn_count": 1
   },
+  "summary": {
+    "intent": "Document checkpoint work for MergeRadar by reading a commit note and internal/gitutil/checkpoint_refs.go, then summarizing in four sentences the two checkpoint stores, why the reader missed this repo's own checkpoints, what FindCheckpoint does, and what the new test proves.",
+    "outcome": "Produced a four-sentence summary explaining the per-checkpoint-ref store vs. the shared v1 branch store, the root cause of missed checkpoints (reader only knew the per-ref layout), FindCheckpoint's resolution logic, and the new test TestCheckpointIntentsReadsTheSharedV1Branch that validates reading from the v1 branch and correct missing-checkpoint reporting.",
+    "learnings": {
+      "repo": [
+        "Entire stores checkpoints in two distinct layouts: fresh local repos use per-checkpoint refs at refs/entire/checkpoints/<last-two-chars>/<id>; mirror-connected repos instead store all checkpoints on a shared entire/checkpoints/v1 branch under <first-two-chars>/<rest-of-id>/",
+        "The mergeradar intent reader previously only understood the per-checkpoint-ref store, causing false 'missing checkpoint' reports for repos (like this one) that use the shared v1 branch layout"
+      ],
+      "code": [
+        {
+          "path": "internal/gitutil/checkpoint_refs.go",
+          "finding": "FindCheckpoint validates the checkpoint id, first tries the per-checkpoint ref, then falls back to scanning local/remote-tracking v1 branches for <dir>/metadata.json, returning a CheckpointLocation (revision + directory) whose Path/Tree helpers let callers read files uniformly regardless of which store the checkpoint lives in"
+        }
+      ],
+      "workflow": [
+        "When fixing a store-detection bug, add a test that builds the alternate layout from real git objects (not mocks) to prove the reader resolves checkpoints stored only in that layout, plus a negative case confirming a checkpoint absent from both stores is still correctly reported missing"
+      ]
+    },
+    "friction": [],
+    "open_items": []
+  },
   "initial_attribution": {
     "calculated_at": "2026-09-06T06:19:14.515534Z",
     "agent_lines": 0,
