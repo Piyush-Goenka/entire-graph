@@ -128,9 +128,11 @@ func shortSHA(sha string) string {
 }
 
 func writeMergeRadarText(out io.Writer, report sem.MergeReport, depth int) {
+	hoisted := hoistedIntents(report)
 	fmt.Fprintf(out, "MergeRadar  base %s  depth %d\n", shortSHA(report.Base), depth)
-	fmt.Fprintf(out, "  A  %-24s %s  %d files, %d entities changed\n", report.A.Ref, shortSHA(report.A.Commit), report.A.Files, report.A.Entities)
-	fmt.Fprintf(out, "  B  %-24s %s  %d files, %d entities changed\n\n", report.B.Ref, shortSHA(report.B.Commit), report.B.Files, report.B.Entities)
+	writeMergeSide(out, "A", report.A, hoisted[report.A.Ref])
+	writeMergeSide(out, "B", report.B, hoisted[report.B.Ref])
+	fmt.Fprintln(out)
 
 	if len(report.Conflicts) == 0 {
 		fmt.Fprintln(out, "No cross-branch conflicts found at this depth.")
@@ -139,7 +141,7 @@ func writeMergeRadarText(out io.Writer, report sem.MergeReport, depth int) {
 	} else {
 		fmt.Fprintf(out, "%d potential conflict(s). Labelled potential until a merged tree is actually tested.\n\n", len(report.Conflicts))
 		for i, c := range report.Conflicts {
-			writeMergeConflict(out, i+1, c)
+			writeMergeConflict(out, i+1, c, hoisted)
 		}
 	}
 
@@ -159,7 +161,56 @@ func writeMergeRadarText(out io.Writer, report sem.MergeReport, depth int) {
 	}
 }
 
-func writeMergeConflict(out io.Writer, n int, c sem.MergeConflict) {
+func writeMergeSide(out io.Writer, letter string, side sem.MergeSide, intent *sem.CheckpointIntent) {
+	fmt.Fprintf(out, "  %s  %-24s %s  %d files, %d entities changed\n", letter, side.Ref, shortSHA(side.Commit), side.Files, side.Entities)
+	if intent != nil {
+		writeIntentLine(out, "     ", "intent", intent)
+	}
+}
+
+// hoistedIntents returns, per branch ref, the single checkpoint intent that
+// every conflict on that side quotes, so the text report states it once under
+// the branch instead of repeating it under each finding. A side whose conflicts
+// quote different checkpoints, or none, gets no entry and keeps its per-conflict
+// lines. With no conflicts at all, each side's most recent intent is shown so
+// the reader still sees what the two branches set out to do.
+func hoistedIntents(report sem.MergeReport) map[string]*sem.CheckpointIntent {
+	hoisted := map[string]*sem.CheckpointIntent{}
+	if len(report.Conflicts) == 0 {
+		for _, side := range []*sem.MergeSide{&report.A, &report.B} {
+			if len(side.Intents) > 0 {
+				hoisted[side.Ref] = &side.Intents[0]
+			}
+		}
+		return hoisted
+	}
+	mixed := map[string]bool{}
+	consider := func(ref string, intent *sem.CheckpointIntent) {
+		if mixed[ref] {
+			return
+		}
+		prev, seen := hoisted[ref]
+		switch {
+		case intent == nil:
+			mixed[ref] = true
+			delete(hoisted, ref)
+		case !seen:
+			hoisted[ref] = intent
+		case prev.CheckpointID != intent.CheckpointID || prev.Commit != intent.Commit:
+			mixed[ref] = true
+			delete(hoisted, ref)
+		}
+	}
+	for _, c := range report.Conflicts {
+		consider(c.ChangedOn, c.ChangedIntent)
+		if c.Consumer != nil {
+			consider(c.ConsumerOn, c.ConsumerIntent)
+		}
+	}
+	return hoisted
+}
+
+func writeMergeConflict(out io.Writer, n int, c sem.MergeConflict, hoisted map[string]*sem.CheckpointIntent) {
 	fmt.Fprintf(out, "[%d] %s  %s\n", n, strings.ToUpper(c.Kind), c.Confidence)
 	fmt.Fprintf(out, "    changed on %-12s %s %s  %s:%d  %s\n", c.ChangedOn, c.Changed.Kind, c.Changed.Name, c.Changed.Path, c.Changed.Line, c.Changed.Type)
 	if c.Changed.OldSignature != "" && c.Changed.NewSignature != "" && c.Changed.OldSignature != c.Changed.NewSignature {
@@ -180,16 +231,23 @@ func writeMergeConflict(out io.Writer, n int, c sem.MergeConflict) {
 		}
 		fmt.Fprintf(out, "    %-11s %-12s %s %s  %s:%d  %s%s\n", label, c.ConsumerOn, c.Consumer.Kind, c.Consumer.Name, c.Consumer.Path, c.Consumer.Line, c.Consumer.Type, via)
 	}
-	writeIntentLine(out, "why "+c.ChangedOn, c.ChangedIntent)
-	if c.Consumer != nil {
-		writeIntentLine(out, "why "+c.ConsumerOn, c.ConsumerIntent)
+	if hoisted[c.ChangedOn] == nil {
+		writeIntentLine(out, "    ", "why "+c.ChangedOn, c.ChangedIntent)
+	}
+	if c.Consumer != nil && hoisted[c.ConsumerOn] == nil {
+		writeIntentLine(out, "    ", "why "+c.ConsumerOn, c.ConsumerIntent)
 	}
 	fmt.Fprintf(out, "    => %s\n\n", c.Explanation)
 }
 
-func writeIntentLine(out io.Writer, label string, intent *sem.CheckpointIntent) {
+// intentWrapWidth keeps quoted intents readable in a terminal; the JSON output
+// carries them unwrapped.
+const intentWrapWidth = 88
+
+func writeIntentLine(out io.Writer, indent, label string, intent *sem.CheckpointIntent) {
+	w := max(len(label), 6)
 	if intent == nil {
-		fmt.Fprintf(out, "    %-24s (no commits on this side carry checkpoints)\n", label)
+		fmt.Fprintf(out, "%s%-*s (no commits on this side carry checkpoints)\n", indent, w, label)
 		return
 	}
 	if intent.Source == sem.IntentSourceMissing {
@@ -197,10 +255,15 @@ func writeIntentLine(out io.Writer, label string, intent *sem.CheckpointIntent) 
 		if note == "" {
 			note = "no recorded intent"
 		}
-		fmt.Fprintf(out, "    %-24s [no intent: %s]  commit %s\n", label, note, shortSHA(intent.Commit))
+		fmt.Fprintf(out, "%s%-*s [no intent: %s]  commit %s\n", indent, w, label, note, shortSHA(intent.Commit))
 		return
 	}
-	fmt.Fprintf(out, "    %-24s \"%s\"\n", label, intent.Intent)
+	lines := wrapWords(intent.Intent, intentWrapWidth)
+	fmt.Fprintf(out, "%s%-*s \"%s", indent, w, label, lines[0])
+	for _, l := range lines[1:] {
+		fmt.Fprintf(out, "\n%s%-*s  %s", indent, w, "", l)
+	}
+	fmt.Fprintln(out, "\"")
 	evidence := []string{"checkpoint " + intent.CheckpointID, "commit " + shortSHA(intent.Commit), "from " + intent.Source}
 	if intent.Agent != "" {
 		evidence = append(evidence, intent.Agent)
@@ -208,8 +271,29 @@ func writeIntentLine(out io.Writer, label string, intent *sem.CheckpointIntent) 
 	if intent.Match != "" {
 		evidence = append(evidence, "matched by "+intent.Match)
 	}
-	fmt.Fprintf(out, "    %-24s %s\n", "", strings.Join(evidence, " · "))
+	fmt.Fprintf(out, "%s%-*s %s\n", indent, w, "", strings.Join(evidence, " · "))
 	if intent.Note != "" {
-		fmt.Fprintf(out, "    %-24s note: %s\n", "", intent.Note)
+		fmt.Fprintf(out, "%s%-*s note: %s\n", indent, w, "", intent.Note)
 	}
+}
+
+// wrapWords splits s into lines of at most width runes at word boundaries. A
+// single word longer than width stays on its own line. It always returns at
+// least one line so callers can print lines[0] unconditionally.
+func wrapWords(s string, width int) []string {
+	words := strings.Fields(s)
+	if len(words) == 0 {
+		return []string{s}
+	}
+	var lines []string
+	cur := words[0]
+	for _, word := range words[1:] {
+		if len([]rune(cur))+1+len([]rune(word)) > width {
+			lines = append(lines, cur)
+			cur = word
+			continue
+		}
+		cur += " " + word
+	}
+	return append(lines, cur)
 }
