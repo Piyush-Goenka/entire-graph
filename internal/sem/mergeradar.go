@@ -3,6 +3,7 @@ package sem
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -16,6 +17,36 @@ const MergeRadarSchemaVersion = "merge-radar/1"
 // but that no merged tree has been tested against. It is the only confidence
 // this analysis emits on its own: upgrading a finding requires running code.
 const ConfidencePotential = "potential"
+
+// Evidence classes say how much the graph actually proved about a finding.
+// Structural means every hop in the chain resolved to exactly one parsed
+// entity with no coverage warning on its file. Heuristic means the chain was
+// matched by short name where that name has several definitions, passes
+// through a method that may dispatch dynamically, or crosses a file the
+// analysis could not fully parse. Neither class is a verified break: the
+// confidence stays potential until a merged tree is tested.
+const (
+	EvidenceStructural = "structural"
+	EvidenceHeuristic  = "heuristic"
+)
+
+// Analysis coverage. Complete means every changed file and every file the
+// reference walk touched was parsed and every matched name resolved to one
+// definition. Partial means at least one of those failed, so an empty
+// conflict list is not evidence of safety.
+const (
+	AnalysisComplete = "complete"
+	AnalysisPartial  = "partial"
+)
+
+// MergeAnalysis states how much of the two branches the analysis could see.
+// Reasons name what it could not: unparsed or unsupported files, ambiguous
+// names, generated code and reflection.
+type MergeAnalysis struct {
+	Status  string   `json:"status"`
+	Summary string   `json:"summary,omitempty"`
+	Reasons []string `json:"reasons,omitempty"`
+}
 
 // Conflict kinds. Direct means both branches changed the same entity.
 // Dependency means one branch changed an entity that code changed or added on
@@ -61,6 +92,8 @@ type MergeSide struct {
 type MergeConflict struct {
 	Kind           string            `json:"kind"`
 	Confidence     string            `json:"confidence"`
+	Evidence       string            `json:"evidence"`
+	EvidenceNotes  []string          `json:"evidence_notes,omitempty"`
 	Changed        ChangedEntity     `json:"changed"`
 	ChangedOn      string            `json:"changed_on"`
 	Consumer       *ChangedEntity    `json:"consumer,omitempty"`
@@ -73,12 +106,14 @@ type MergeConflict struct {
 
 // MergeReport is the full result of AnalyzeMerge.
 type MergeReport struct {
-	SchemaVersion string            `json:"schema_version"`
-	Base          string            `json:"base"`
-	A             MergeSide         `json:"a"`
-	B             MergeSide         `json:"b"`
-	Conflicts     []MergeConflict   `json:"conflicts"`
-	Warnings      []ProviderWarning `json:"warnings,omitempty"`
+	SchemaVersion string             `json:"schema_version"`
+	Base          string             `json:"base"`
+	A             MergeSide          `json:"a"`
+	B             MergeSide          `json:"b"`
+	Analysis      MergeAnalysis      `json:"analysis"`
+	Conflicts     []MergeConflict    `json:"conflicts"`
+	Verification  *MergeVerification `json:"verification,omitempty"`
+	Warnings      []ProviderWarning  `json:"warnings,omitempty"`
 }
 
 // ChangedNames returns the short reference names of every entity changed in
@@ -136,6 +171,20 @@ func parseEntityKey(key string) (EntityRef, bool) {
 // two semantic diffs. maxDepth bounds how many reference hops to follow from
 // a changed entity when looking for changed code on the other branch.
 func AnalyzeMerge(ctx context.Context, repo, base, refA, refB string, maxDepth int) (MergeReport, error) {
+	return AnalyzeMergeWithOptions(ctx, repo, base, refA, refB, maxDepth, MergeOptions{})
+}
+
+// MergeOptions tunes what the reference walk may pass through.
+type MergeOptions struct {
+	// IncludeDocs lets document entities (Markdown, reStructuredText and
+	// similar prose) take part in the walk. Off by default: a document that
+	// mentions a name is not a code dependency, and on a large repository
+	// those mentions drown the structural findings.
+	IncludeDocs bool
+}
+
+// AnalyzeMergeWithOptions is AnalyzeMerge with the walk options exposed.
+func AnalyzeMergeWithOptions(ctx context.Context, repo, base, refA, refB string, maxDepth int, opts MergeOptions) (MergeReport, error) {
 	if maxDepth < 1 {
 		maxDepth = 1
 	}
@@ -161,16 +210,20 @@ func AnalyzeMerge(ctx context.Context, repo, base, refA, refB string, maxDepth i
 	changedA := indexChanged(resA)
 	changedB := indexChanged(resB)
 
-	report.Conflicts = append(report.Conflicts, directConflicts(changedA, changedB, refA, refB)...)
+	direct, err := dropIdenticalFiles(ctx, repo, refA, refB, directConflicts(changedA, changedB, refA, refB))
+	if err != nil {
+		return MergeReport{}, err
+	}
+	report.Conflicts = append(report.Conflicts, direct...)
 
-	ab, warnings, err := dependencyConflicts(ctx, repo, refA, refB, changedA, changedB, maxDepth)
+	ab, warnings, err := dependencyConflicts(ctx, repo, refA, refB, changedA, changedB, maxDepth, opts)
 	if err != nil {
 		return MergeReport{}, err
 	}
 	report.Warnings = append(report.Warnings, warnings...)
 	report.Conflicts = append(report.Conflicts, ab...)
 
-	ba, warnings, err := dependencyConflicts(ctx, repo, refB, refA, changedB, changedA, maxDepth)
+	ba, warnings, err := dependencyConflicts(ctx, repo, refB, refA, changedB, changedA, maxDepth, opts)
 	if err != nil {
 		return MergeReport{}, err
 	}
@@ -179,7 +232,312 @@ func AnalyzeMerge(ctx context.Context, repo, base, refA, refB string, maxDepth i
 
 	report.Conflicts = dedupeConflicts(report.Conflicts)
 	sortConflicts(report.Conflicts)
+	ambiguous, err := classifyConflicts(ctx, repo, report.Conflicts, report.Warnings)
+	if err != nil {
+		return MergeReport{}, err
+	}
+	report.Analysis, err = assessCoverage(ctx, repo, report.Warnings, ambiguous, []sideFiles{{ref: refA, files: resA.Files}, {ref: refB, files: resB.Files}})
+	if err != nil {
+		return MergeReport{}, err
+	}
 	return report, nil
+}
+
+type sideFiles struct {
+	ref   string
+	files []FileChange
+}
+
+var (
+	generatedHeader = regexp.MustCompile(`(?i)Code generated .*DO NOT EDIT|@generated\b`)
+	reflectImport   = regexp.MustCompile(`(?m)^\s*(import\s+)?"reflect"\s*$`)
+)
+
+// assessCoverage derives the report-level coverage from what the analysis
+// already knows it missed: provider warnings on files in the diff or the
+// reference walk, names that matched more than one definition, and changed
+// files whose real logic lives outside the tree (generated code) or is
+// invoked by name at runtime (reflect).
+func assessCoverage(ctx context.Context, repo string, warnings []ProviderWarning, ambiguous []string, sides []sideFiles) (MergeAnalysis, error) {
+	var reasons []string
+
+	filesByCode := map[string][]string{}
+	seenFile := map[string]bool{}
+	var codes []string
+	for _, w := range warnings {
+		key := w.Code + "\x00" + w.FilePath
+		if seenFile[key] {
+			continue
+		}
+		seenFile[key] = true
+		if _, ok := filesByCode[w.Code]; !ok {
+			codes = append(codes, w.Code)
+		}
+		if w.FilePath != "" {
+			filesByCode[w.Code] = append(filesByCode[w.Code], w.FilePath)
+		} else {
+			filesByCode[w.Code] = append(filesByCode[w.Code], "("+w.EffectOnCompleteness+")")
+		}
+	}
+	for _, code := range codes {
+		files := filesByCode[code]
+		shown := files
+		more := ""
+		if len(shown) > 3 {
+			shown = shown[:3]
+			more = fmt.Sprintf(" and %d more", len(files)-3)
+		}
+		reasons = append(reasons, fmt.Sprintf("%s: %d file(s) not fully analysed (%s%s); references inside them are invisible", code, len(files), strings.Join(shown, ", "), more))
+	}
+
+	reasons = append(reasons, ambiguous...)
+
+	changed := map[string]bool{}
+	for _, side := range sides {
+		for _, file := range side.files {
+			changed[file.Path] = true
+		}
+	}
+	affected := map[string]bool{}
+	parseFailed, unsupported, other := 0, 0, 0
+	for code, files := range filesByCode {
+		for _, f := range files {
+			if changed[f] {
+				affected[f] = true
+			}
+		}
+		switch code {
+		case "E_PARSE_ERROR", "E_PARSE_TIMEOUT", "E_PARSE_DEPTH_EXCEEDED":
+			parseFailed += len(files)
+		case "E_UNSUPPORTED_LANGUAGE", "W_UNSUPPORTED_FILE":
+			unsupported += len(files)
+		default:
+			other += len(files)
+		}
+	}
+	special := 0
+
+	for _, side := range sides {
+		for _, file := range side.files {
+			if file.Status == "deleted" || file.Status == "removed" || file.Status == "D" {
+				continue
+			}
+			content, ok, err := gitutil.ShowFile(ctx, repo, side.ref, file.Path)
+			if err != nil {
+				return MergeAnalysis{}, err
+			}
+			if !ok {
+				continue
+			}
+			head := content
+			if len(head) > 4096 {
+				head = head[:4096]
+			}
+			if generatedHeader.MatchString(head) {
+				reasons = append(reasons, fmt.Sprintf("generated code: %s on %s carries a Code generated header; the real change is in its generator, which the graph does not see", file.Path, side.ref))
+				affected[file.Path] = true
+				special++
+			}
+			if strings.HasSuffix(file.Path, ".go") && reflectImport.MatchString(head) {
+				reasons = append(reasons, fmt.Sprintf("reflect: %s on %s imports reflect; calls made by name at runtime never appear as references", file.Path, side.ref))
+				affected[file.Path] = true
+				special++
+			}
+		}
+	}
+
+	if len(reasons) == 0 {
+		return MergeAnalysis{Status: AnalysisComplete}, nil
+	}
+	var parts []string
+	if parseFailed > 0 {
+		parts = append(parts, fmt.Sprintf("%d file(s) failed to parse", parseFailed))
+	}
+	if unsupported > 0 {
+		parts = append(parts, fmt.Sprintf("%d unsupported", unsupported))
+	}
+	if other > 0 {
+		parts = append(parts, fmt.Sprintf("%d other warning(s)", other))
+	}
+	if len(ambiguous) > 0 {
+		parts = append(parts, fmt.Sprintf("%d ambiguous name(s)", len(ambiguous)))
+	}
+	if special > 0 {
+		parts = append(parts, fmt.Sprintf("%d generated or reflective file(s)", special))
+	}
+	summary := strings.Join(parts, ", ")
+	if len(affected) > 0 {
+		summary += fmt.Sprintf("; %d changed file(s) affected", len(affected))
+	}
+	return MergeAnalysis{Status: AnalysisPartial, Summary: summary, Reasons: reasons}, nil
+}
+
+// definitionsAt lists the entities defined in head whose short name is one of
+// names. It answers the question the reference index cannot: how many
+// different things a short-name hit could have meant. Files the parser
+// cannot handle are skipped here; the reference walk already warned about
+// them.
+func definitionsAt(ctx context.Context, repo, head string, names map[string]struct{}) (map[string][]EntityRef, error) {
+	out := map[string][]EntityRef{}
+	if len(names) == 0 {
+		return out, nil
+	}
+	files, _, _, err := referenceCandidateFiles(ctx, repo, head, names)
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(files)
+	parser := TreeSitterParser{}
+	for _, path := range files {
+		if !Supported(path) {
+			continue
+		}
+		content, ok, err := gitutil.ShowFile(ctx, repo, head, path)
+		if err != nil {
+			return nil, err
+		}
+		if !ok || len(content) > defaultMaxParseBytes || !containsAnyName(content, names) {
+			continue
+		}
+		entities, _, _ := parser.ParseWithStatus(path, content)
+		for _, entity := range entities {
+			short := shortEntityName(entity.Name)
+			if _, wanted := names[short]; !wanted {
+				continue
+			}
+			out[short] = append(out[short], EntityRef{Path: path, Kind: entity.Kind, Name: entity.Name})
+		}
+	}
+	return out, nil
+}
+
+// matchedNames returns the short names a finding's chain was matched by: the
+// changed entity's name, then each intermediate hop's name. The consumer's
+// own name is never matched, so it is not included.
+func matchedNames(c MergeConflict) []string {
+	names := []string{shortEntityName(c.Changed.Name)}
+	for _, v := range c.Via {
+		names = append(names, shortEntityName(v.Name))
+	}
+	return names
+}
+
+// classifyConflicts assigns an evidence class and its reasons to every
+// finding. Definitions are looked up once per consumer branch for all the
+// names its findings were matched by.
+func classifyConflicts(ctx context.Context, repo string, conflicts []MergeConflict, warnings []ProviderWarning) ([]string, error) {
+	namesByHead := map[string]map[string]struct{}{}
+	for _, c := range conflicts {
+		if c.Kind != ConflictDependency {
+			continue
+		}
+		if namesByHead[c.ConsumerOn] == nil {
+			namesByHead[c.ConsumerOn] = map[string]struct{}{}
+		}
+		for _, name := range matchedNames(c) {
+			namesByHead[c.ConsumerOn][name] = struct{}{}
+		}
+	}
+	defsByHead := map[string]map[string][]EntityRef{}
+	var ambiguous []string
+	heads := make([]string, 0, len(namesByHead))
+	for head := range namesByHead {
+		heads = append(heads, head)
+	}
+	sort.Strings(heads)
+	for _, head := range heads {
+		defs, err := definitionsAt(ctx, repo, head, namesByHead[head])
+		if err != nil {
+			return nil, err
+		}
+		defsByHead[head] = defs
+		names := make([]string, 0, len(defs))
+		for name, found := range defs {
+			if len(found) > 1 {
+				names = append(names, name)
+			}
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			ambiguous = append(ambiguous, fmt.Sprintf("ambiguous name: %s has %d definitions on %s (%s); findings matched by it are heuristic", name, len(defs[name]), head, describeRefs(defs[name])))
+		}
+	}
+	for i := range conflicts {
+		classifyEvidence(&conflicts[i], defsByHead[conflicts[i].ConsumerOn], warnings)
+	}
+	return ambiguous, nil
+}
+
+// describeRefsShown bounds how many definitions a note lists; the count
+// carries the rest.
+const describeRefsShown = 3
+
+func describeRefs(refs []EntityRef) string {
+	names := make([]string, 0, len(refs))
+	for i, d := range refs {
+		if i == describeRefsShown {
+			names = append(names, fmt.Sprintf("and %d more", len(refs)-describeRefsShown))
+			break
+		}
+		names = append(names, d.Kind+" "+d.Name+" in "+d.Path)
+	}
+	return strings.Join(names, ", ")
+}
+
+// classifyEvidence decides how much the graph proved about one finding. A
+// note is recorded for each reason the match could be wrong or incomplete;
+// with no notes the evidence is structural.
+func classifyEvidence(c *MergeConflict, defs map[string][]EntityRef, warnings []ProviderWarning) {
+	var notes []string
+	chain := []EntityRef{{Path: c.Changed.Path, Kind: c.Changed.Kind, Name: c.Changed.Name}}
+	chain = append(chain, c.Via...)
+	if c.Consumer != nil {
+		chain = append(chain, EntityRef{Path: c.Consumer.Path, Kind: c.Consumer.Kind, Name: c.Consumer.Name})
+	}
+	switch c.Kind {
+	case ConflictDependency:
+		for _, name := range matchedNames(*c) {
+			if found := defs[name]; len(found) > 1 {
+				notes = append(notes, fmt.Sprintf("ambiguous name: %d definitions of %s on %s (%s); the reference index matches by short name and cannot say which one the consumer meant",
+					len(found), name, c.ConsumerOn, describeRefs(found)))
+			}
+		}
+		for _, ref := range chain {
+			switch ref.Kind {
+			case "method":
+				notes = append(notes, fmt.Sprintf("method in chain: %s in %s; a call to it may dispatch through an interface the graph cannot resolve", ref.Name, ref.Path))
+			case documentKind, "section":
+				notes = append(notes, fmt.Sprintf("hop through document: %s in %s; a mention in prose is not a code reference", ref.Name, ref.Path))
+			}
+		}
+	case ConflictDirect:
+		if c.Consumer != nil && (c.Consumer.Kind != c.Changed.Kind || c.Consumer.Name != c.Changed.Name) {
+			notes = append(notes, fmt.Sprintf("same short name, different entities: %s %s and %s %s in %s", c.Changed.Kind, c.Changed.Name, c.Consumer.Kind, c.Consumer.Name, c.Changed.Path))
+		}
+	}
+	files := map[string]bool{}
+	for _, ref := range chain {
+		files[ref.Path] = true
+	}
+	seen := map[string]bool{}
+	for _, w := range warnings {
+		if w.FilePath == "" || !files[w.FilePath] {
+			continue
+		}
+		key := w.Code + "\x00" + w.FilePath
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		notes = append(notes, fmt.Sprintf("file did not parse: %s (%s); %s", w.FilePath, w.Code, w.EffectOnCompleteness))
+	}
+	if len(notes) > 0 {
+		c.Evidence = EvidenceHeuristic
+		c.EvidenceNotes = notes
+		return
+	}
+	c.Evidence = EvidenceStructural
+	c.EvidenceNotes = nil
 }
 
 func summarizeSide(ctx context.Context, repo, ref string, result Result) (MergeSide, error) {
@@ -255,6 +613,48 @@ func directConflicts(changedA, changedB map[string][]ChangedEntity, refA, refB s
 	return out
 }
 
+// documentKind is the entity kind the parser gives whole prose files
+// (reStructuredText, HTML); Markdown headings are "section". A mention in
+// either is not a code reference.
+const documentKind = "document"
+
+func isProseKind(kind string) bool {
+	return kind == documentKind || kind == "section"
+}
+
+// firstCodeEntity returns the first entity in ents the walk may start from.
+func firstCodeEntity(ents []ChangedEntity, skip func(kind string) bool) (ChangedEntity, bool) {
+	for _, ent := range ents {
+		if !skip(ent.Kind) {
+			return ent, true
+		}
+	}
+	return ChangedEntity{}, false
+}
+
+// dropIdenticalFiles removes direct conflicts on files whose blobs are the
+// same on both branches: one branch contains the other's commit, or both
+// agents wrote the same bytes. Git merges that without choosing, so there is
+// no collision of intents to report.
+func dropIdenticalFiles(ctx context.Context, repo, refA, refB string, conflicts []MergeConflict) ([]MergeConflict, error) {
+	identical := map[string]bool{}
+	out := conflicts[:0]
+	for _, c := range conflicts {
+		same, seen := identical[c.Changed.Path]
+		if !seen {
+			blobA, errA := gitutil.RevParse(ctx, repo, refA+":"+c.Changed.Path)
+			blobB, errB := gitutil.RevParse(ctx, repo, refB+":"+c.Changed.Path)
+			same = errA == nil && errB == nil && blobA == blobB
+			identical[c.Changed.Path] = same
+		}
+		if same {
+			continue
+		}
+		out = append(out, c)
+	}
+	return out, nil
+}
+
 // hop carries the originating change and the chain of intermediate entities
 // through which a name was reached during the reference walk.
 type hop struct {
@@ -267,32 +667,49 @@ type hop struct {
 // changed or added is a conflict; every referencing entity is a candidate for
 // the next hop regardless, so an untouched intermediate caller still connects
 // a changed entity to changed code two hops away.
-func dependencyConflicts(ctx context.Context, repo, changedRef, consumerRef string, changed, consumerChanged map[string][]ChangedEntity, maxDepth int) ([]MergeConflict, []ProviderWarning, error) {
+//
+// The walk is deterministic: frontier names are visited in sorted order, so
+// when two origins reach the same intermediate the finding is always
+// attributed to the same one and the report never changes between runs.
+// Document entities are skipped unless opts.IncludeDocs is set.
+func dependencyConflicts(ctx context.Context, repo, changedRef, consumerRef string, changed, consumerChanged map[string][]ChangedEntity, maxDepth int, opts MergeOptions) ([]MergeConflict, []ProviderWarning, error) {
+	skip := func(kind string) bool { return !opts.IncludeDocs && isProseKind(kind) }
 	frontier := map[string]hop{}
 	visited := map[string]bool{}
 	for name, ents := range changed {
-		frontier[name] = hop{origin: ents[0]}
+		origin, ok := firstCodeEntity(ents, skip)
+		if !ok {
+			continue
+		}
+		frontier[name] = hop{origin: origin}
 		visited[name] = true
 	}
 	var out []MergeConflict
 	var warnings []ProviderWarning
 	for depth := 1; depth <= maxDepth && len(frontier) > 0; depth++ {
 		names := make(map[string]struct{}, len(frontier))
+		ordered := make([]string, 0, len(frontier))
 		for name := range frontier {
 			names[name] = struct{}{}
+			ordered = append(ordered, name)
 		}
+		sort.Strings(ordered)
 		refs, scanWarnings, err := ReferencesTo(ctx, repo, consumerRef, names)
 		if err != nil {
 			return nil, nil, err
 		}
 		warnings = append(warnings, scanWarnings...)
 		next := map[string]hop{}
-		for name, h := range frontier {
+		for _, name := range ordered {
+			h := frontier[name]
 			for _, ref := range refs[name] {
+				if skip(ref.Kind) {
+					continue
+				}
 				short := shortEntityName(ref.Name)
 				if ents, ok := consumerChanged[short]; ok {
 					for _, ent := range ents {
-						if ent.Path != ref.Path || ent.Type == "removed" {
+						if ent.Path != ref.Path || ent.Type == "removed" || skip(ent.Kind) {
 							continue
 						}
 						consumer := ent

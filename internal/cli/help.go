@@ -184,18 +184,22 @@ var commandDocs = []commandDoc{
 		name:    "merge-radar",
 		group:   groupAnalyze,
 		summary: "Find changes on two branches that merge cleanly but break each other",
-		usage:   []string{"entire graph merge-radar <branch-a> <branch-b> --repo . [--base <ref>] [--depth 1|2|3] [--json] [--no-intent]"},
-		long: "Diffs both branches against their merge base, then cross-references them: an entity changed on one branch that code changed or added on the other branch references is a conflict neither branch's tests could have exercised, even when Git merges without a marker. Every finding is labelled potential until a merged tree is actually tested; the report ends with the command to build one.\n\n" +
+		usage:   []string{"entire graph merge-radar <branch-a> <branch-b> --repo . [--base <ref>] [--depth 1|2|3] [--verify] [--include-docs] [--json] [--no-intent]"},
+		long: "Diffs both branches against their merge base, then cross-references them: an entity changed on one branch that code changed or added on the other branch references is a conflict neither branch's tests could have exercised, even when Git merges without a marker. Every finding is labelled potential until a merged tree is actually tested; the report ends with the command to build one, and --verify runs it.\n\n" +
+			"The graph is evidence, not an oracle. Each finding states its evidence class: structural when every hop resolved to one parsed entity, heuristic when the match relied on a short name with several definitions, passed through a method or a document, or crossed a file that did not parse. The report opens with its coverage: complete, or partial with the reasons (unparsed or unsupported files, ambiguous names, generated code, reflect). An empty result from a partial analysis is never presented as safe.\n\n" +
 			"When commits carry Entire-Checkpoint trailers, the recorded intent behind each side (the checkpoint's AI summary, or the session prompt when no summary exists) is printed beside the conflict so the two agents' assumptions can be compared in their own words.",
 		flags: []flagDoc{
 			{name: "--base", arg: "ref", desc: "Common base (default: git merge-base of the two branches)"},
 			{name: "--repo", arg: "path", desc: "Repository (default: current repo)"},
 			{name: "--depth", arg: "1|2|3", def: "2", desc: "Reference hops to follow from a changed entity"},
+			{name: "--verify", desc: "Build the scratch merge and run the repository's tests on it (Go modules); otherwise print the manual path"},
+			{name: "--include-docs", desc: "Let document entities (reStructuredText, Markdown) take part in the reference walk; off by default"},
 			{name: "--json", desc: "Machine-readable report"},
 			{name: "--no-intent", desc: "Skip the checkpoint intent lookup"},
 		},
 		examples: []string{
 			"entire graph merge-radar feature/pricing-rupees feature/invoicing --repo .",
+			"entire graph merge-radar feature/pricing-rupees feature/invoicing --repo . --verify",
 			"entire graph merge-radar agent-a agent-b --base main --json",
 		},
 	},

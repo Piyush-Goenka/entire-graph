@@ -20,12 +20,14 @@ const (
 )
 
 type mergeRadarFlags struct {
-	Repo     string
-	Base     string
-	JSON     bool
-	NoIntent bool
-	Depth    int
-	Refs     []string
+	Repo        string
+	Base        string
+	JSON        bool
+	NoIntent    bool
+	Verify      bool
+	IncludeDocs bool
+	Depth       int
+	Refs        []string
 }
 
 func parseMergeRadarFlags(args []string) (mergeRadarFlags, error) {
@@ -66,6 +68,10 @@ func parseMergeRadarFlags(args []string) (mergeRadarFlags, error) {
 			flags.JSON = true
 		case "--no-intent":
 			flags.NoIntent = true
+		case "--verify":
+			flags.Verify = true
+		case "--include-docs":
+			flags.IncludeDocs = true
 		default:
 			if strings.HasPrefix(arg, "-") {
 				return flags, fmt.Errorf("unknown flag %s for merge-radar", arg)
@@ -101,7 +107,7 @@ func runMergeRadar(ctx context.Context, opts Options, args []string) error {
 			return fmt.Errorf("merge-radar: no merge base between %s and %s; pass --base <ref>: %w", flags.Refs[0], flags.Refs[1], err)
 		}
 	}
-	report, err := sem.AnalyzeMerge(ctx, repo, base, flags.Refs[0], flags.Refs[1], flags.Depth)
+	report, err := sem.AnalyzeMergeWithOptions(ctx, repo, base, flags.Refs[0], flags.Refs[1], flags.Depth, sem.MergeOptions{IncludeDocs: flags.IncludeDocs})
 	if err != nil {
 		return err
 	}
@@ -109,6 +115,13 @@ func runMergeRadar(ctx context.Context, opts Options, args []string) error {
 		if err := sem.AttachIntent(ctx, repo, &report); err != nil {
 			return err
 		}
+	}
+	if flags.Verify {
+		verification, err := sem.VerifyMerge(ctx, repo, flags.Refs[0], flags.Refs[1])
+		if err != nil {
+			return err
+		}
+		report.Verification = &verification
 	}
 	if flags.JSON {
 		encoder := json.NewEncoder(termsafe.NewJSONWriter(opts.Stdout))
@@ -132,22 +145,38 @@ func writeMergeRadarText(out io.Writer, report sem.MergeReport, depth int) {
 	fmt.Fprintf(out, "MergeRadar  base %s  depth %d\n", shortSHA(report.Base), depth)
 	writeMergeSide(out, "A", report.A, hoisted[report.A.Ref])
 	writeMergeSide(out, "B", report.B, hoisted[report.B.Ref])
+	writeMergeCoverage(out, report.Analysis)
 	fmt.Fprintln(out)
 
+	partial := report.Analysis.Status == sem.AnalysisPartial
 	if len(report.Conflicts) == 0 {
-		fmt.Fprintln(out, "No cross-branch conflicts found at this depth.")
-		fmt.Fprintln(out, "The graph saw no entity changed on one branch that changed or added code on the other references.")
+		if partial {
+			fmt.Fprintln(out, "No conflicts found, but analysis is partial:")
+			for _, reason := range report.Analysis.Reasons {
+				fmt.Fprintf(out, "  - %s\n", reason)
+			}
+			fmt.Fprintln(out, "An empty result from a partial analysis is not evidence of safety: the reference the graph could not see may be the one that breaks.")
+		} else {
+			fmt.Fprintln(out, "No cross-branch conflicts found at this depth.")
+			fmt.Fprintln(out, "The graph saw no entity changed on one branch that changed or added code on the other references.")
+		}
 		fmt.Fprintln(out, "This is not proof the merge is safe: relationships through configuration, serialised data or runtime strings are invisible to the graph.")
 	} else {
-		fmt.Fprintf(out, "%d potential conflict(s). Labelled potential until a merged tree is actually tested.\n\n", len(report.Conflicts))
+		structural, heuristic := 0, 0
+		for _, c := range report.Conflicts {
+			if c.Evidence == sem.EvidenceHeuristic {
+				heuristic++
+			} else {
+				structural++
+			}
+		}
+		fmt.Fprintf(out, "%d potential conflict(s): %d on structural evidence, %d on heuristic evidence. All potential until a merged tree is actually tested.\n\n", len(report.Conflicts), structural, heuristic)
 		for i, c := range report.Conflicts {
 			writeMergeConflict(out, i+1, c, hoisted)
 		}
 	}
 
-	fmt.Fprintln(out, "Verify before trusting this report:")
-	fmt.Fprintf(out, "  git merge-tree --write-tree %s %s    # scratch merge, no checkout\n", report.A.Ref, report.B.Ref)
-	fmt.Fprintln(out, "  then run the tests that touch the files listed above against that tree.")
+	writeMergeVerification(out, report)
 
 	if len(report.Warnings) > 0 {
 		fmt.Fprintf(out, "\n%d analysis warning(s):\n", len(report.Warnings))
@@ -158,6 +187,57 @@ func writeMergeRadarText(out io.Writer, report sem.MergeReport, depth int) {
 			}
 			fmt.Fprintf(out, "  %s%s: %s\n", w.Code, file, w.EffectOnCompleteness)
 		}
+	}
+}
+
+// writeMergeVerification prints what running the tests on the merged tree
+// showed, or the manual path when nothing was run. Every branch of it names
+// the evidence class the reader is left with.
+func writeMergeVerification(out io.Writer, report sem.MergeReport) {
+	v := report.Verification
+	if v == nil {
+		fmt.Fprintln(out, "Verify before trusting this report (or rerun with --verify):")
+		fmt.Fprintf(out, "  git merge-tree --write-tree %s %s    # scratch merge, no checkout\n", report.A.Ref, report.B.Ref)
+		fmt.Fprintln(out, "  then run the tests that touch the files listed above against that tree.")
+		return
+	}
+	switch v.Status {
+	case sem.VerificationReproduced:
+		fmt.Fprintf(out, "verification REPRODUCED: %s failed on the merged tree %s\n", v.Runner, shortSHA(v.Tree))
+		fmt.Fprintf(out, "  %s\n", v.Note)
+	case sem.VerificationPassed:
+		fmt.Fprintf(out, "verification passed: %s succeeded on the merged tree %s\n", v.Runner, shortSHA(v.Tree))
+		fmt.Fprintf(out, "  %s\n", v.Note)
+	case sem.VerificationConflicted:
+		fmt.Fprintf(out, "verification conflicted: %s\n", v.Note)
+	default:
+		fmt.Fprintf(out, "verification unavailable: %s\n", v.Note)
+	}
+	for _, line := range v.Output {
+		fmt.Fprintf(out, "    %s\n", line)
+	}
+	if v.Status != sem.VerificationReproduced && len(v.Manual) > 0 {
+		fmt.Fprintln(out, "  Manual path:")
+		for _, step := range v.Manual {
+			fmt.Fprintf(out, "    %s\n", step)
+		}
+	}
+}
+
+// writeMergeCoverage prints the one line that says how much of the two
+// branches the analysis could see, followed by the reasons when it is partial.
+func writeMergeCoverage(out io.Writer, analysis sem.MergeAnalysis) {
+	if analysis.Status != sem.AnalysisPartial {
+		fmt.Fprintln(out, "  analysis complete: every changed file parsed, every matched name resolved to one definition")
+		return
+	}
+	summary := analysis.Summary
+	if summary == "" {
+		summary = fmt.Sprintf("%d reason(s) the graph may have missed a relationship", len(analysis.Reasons))
+	}
+	fmt.Fprintf(out, "  analysis PARTIAL: %s\n", summary)
+	for _, reason := range analysis.Reasons {
+		fmt.Fprintf(out, "    - %s\n", reason)
 	}
 }
 
@@ -211,7 +291,14 @@ func hoistedIntents(report sem.MergeReport) map[string]*sem.CheckpointIntent {
 }
 
 func writeMergeConflict(out io.Writer, n int, c sem.MergeConflict, hoisted map[string]*sem.CheckpointIntent) {
-	fmt.Fprintf(out, "[%d] %s  %s\n", n, strings.ToUpper(c.Kind), c.Confidence)
+	evidence := c.Evidence
+	if evidence == "" {
+		evidence = sem.EvidenceHeuristic
+	}
+	fmt.Fprintf(out, "[%d] %s  %s evidence · %s until verified\n", n, strings.ToUpper(c.Kind), evidence, c.Confidence)
+	for _, note := range c.EvidenceNotes {
+		fmt.Fprintf(out, "    evidence    %s\n", note)
+	}
 	fmt.Fprintf(out, "    changed on %-12s %s %s  %s:%d  %s\n", c.ChangedOn, c.Changed.Kind, c.Changed.Name, c.Changed.Path, c.Changed.Line, c.Changed.Type)
 	if c.Changed.OldSignature != "" && c.Changed.NewSignature != "" && c.Changed.OldSignature != c.Changed.NewSignature {
 		fmt.Fprintf(out, "      - %s\n      + %s\n", c.Changed.OldSignature, c.Changed.NewSignature)

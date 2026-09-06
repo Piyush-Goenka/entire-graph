@@ -2,7 +2,9 @@ package sem
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"os/exec"
 	"strings"
 	"testing"
 )
@@ -38,6 +40,7 @@ func radarBranch(t *testing.T, repo, branch string, files map[string]string, mes
 	for path, content := range files {
 		writeFile(t, repo, path, content)
 	}
+	git(t, repo, "add", "-A")
 	args := []string{"commit", "-q", "-a"}
 	for _, part := range message {
 		args = append(args, "-m", part)
@@ -73,6 +76,9 @@ func TestAnalyzeMergeFindsDependencyConflict(t *testing.T) {
 	}
 	if len(c.Via) != 0 {
 		t.Fatalf("direct reference should have no via, got %+v", c.Via)
+	}
+	if c.Evidence != EvidenceStructural || len(c.EvidenceNotes) != 0 {
+		t.Fatalf("a fully resolved reference must stay structural with no notes, got %q %v", c.Evidence, c.EvidenceNotes)
 	}
 	if !strings.Contains(c.Explanation, "never executed") {
 		t.Fatalf("explanation = %q", c.Explanation)
@@ -300,5 +306,281 @@ func TestTruncateRunesMarksTheCut(t *testing.T) {
 	long := truncateRunes(strings.Repeat("ab", 400), 600)
 	if !strings.HasSuffix(long, " [...]") || len(long) > 606 {
 		t.Fatalf("long string not truncated cleanly: len=%d suffix=%q", len(long), long[len(long)-6:])
+	}
+}
+
+// radarCart defines a second entity called Price: a method on Cart. The
+// reference index matches by short name, so a caller of Price(item) also
+// matches this one, and the graph alone cannot say which Price the caller
+// meant.
+const radarCart = "package shop\n\ntype Cart struct {\n\titems []string\n}\n\n// Price returns the cart total in paise.\nfunc (c Cart) Price() int {\n\treturn len(c.items) * 100\n}\n"
+
+func TestAnalyzeMergeMarksAmbiguousNameHeuristic(t *testing.T) {
+	repo := radarRepo(t, map[string]string{"pricing.go": radarBasePricing, "cart.go": radarCart, "invoice.go": radarBaseInvoice})
+	radarBranch(t, repo, "rupees", map[string]string{"pricing.go": radarRupees}, "pricing in rupees")
+	radarBranch(t, repo, "invoicing", map[string]string{"invoice.go": radarInvoicing}, "invoicing on paise")
+
+	report, err := AnalyzeMerge(context.Background(), repo, "main", "rupees", "invoicing", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Conflicts) != 1 {
+		t.Fatalf("expected 1 conflict, got %d: %+v", len(report.Conflicts), report.Conflicts)
+	}
+	c := report.Conflicts[0]
+	if c.Confidence != ConfidencePotential {
+		t.Fatalf("confidence must stay potential, got %q", c.Confidence)
+	}
+	if c.Evidence != EvidenceHeuristic {
+		t.Fatalf("a short-name hit with two definitions must be heuristic, got %q", c.Evidence)
+	}
+	t.Logf("evidence notes: %v", c.EvidenceNotes)
+	if len(c.EvidenceNotes) != 1 || !strings.Contains(c.EvidenceNotes[0], "ambiguous name: 2 definitions of Price") {
+		t.Fatalf("evidence notes should explain the ambiguity, got %v", c.EvidenceNotes)
+	}
+}
+
+func TestAnalyzeMergeReportsPartialAnalysis(t *testing.T) {
+	repo := radarRepo(t, map[string]string{"pricing.go": radarBasePricing, "invoice.go": radarBaseInvoice})
+	radarBranch(t, repo, "rupees", map[string]string{"pricing.go": radarRupees}, "pricing in rupees")
+
+	// A fully parsed pair with nothing in common is complete.
+	footer := radarBaseInvoice + "\nfunc Footer() string {\n\treturn \"thanks\"\n}\n"
+	radarBranch(t, repo, "footer", map[string]string{"invoice.go": footer}, "add footer")
+	complete, err := AnalyzeMerge(context.Background(), repo, "main", "rupees", "footer", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if complete.Analysis.Status != AnalysisComplete || len(complete.Analysis.Reasons) != 0 {
+		t.Fatalf("fully parsed branches should be complete, got %+v", complete.Analysis)
+	}
+
+	// A file the parser cannot handle on one side makes the analysis partial
+	// even when no conflict is found: the unparsed file could hold the caller.
+	broken := footer + "\nfunc Total(items []string) int {\n\treturn Price(\n"
+	radarBranch(t, repo, "broken", map[string]string{"invoice.go": broken}, "half-written total")
+	partial, err := AnalyzeMerge(context.Background(), repo, "main", "rupees", "broken", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("partial reasons: %v", partial.Analysis.Reasons)
+	if partial.Analysis.Status != AnalysisPartial || len(partial.Analysis.Reasons) == 0 {
+		t.Fatalf("an unparsed file should make the analysis partial, got %+v", partial.Analysis)
+	}
+	if !strings.Contains(strings.Join(partial.Analysis.Reasons, "\n"), "invoice.go") {
+		t.Fatalf("reasons should name the file that could not be parsed, got %v", partial.Analysis.Reasons)
+	}
+	t.Logf("partial summary: %s", partial.Analysis.Summary)
+	if !strings.Contains(partial.Analysis.Summary, "1 file(s) failed to parse") || !strings.Contains(partial.Analysis.Summary, "1 changed file(s) affected") {
+		t.Fatalf("summary should count parse failures and affected changed files, got %q", partial.Analysis.Summary)
+	}
+
+	// Generated code is edited at its source, not in the tree: a changed
+	// generated file means the real change is invisible.
+	generated := "// Code generated by pricegen. DO NOT EDIT.\n\n" + radarRupees
+	radarBranch(t, repo, "generated", map[string]string{"pricing.go": generated}, "regenerate pricing")
+	gen, err := AnalyzeMerge(context.Background(), repo, "main", "generated", "footer", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("generated reasons: %v", gen.Analysis.Reasons)
+	if gen.Analysis.Status != AnalysisPartial || !strings.Contains(strings.Join(gen.Analysis.Reasons, "\n"), "generated") {
+		t.Fatalf("a changed generated file should make the analysis partial, got %+v", gen.Analysis)
+	}
+
+	// reflect lets code call names the graph never sees as references.
+	reflective := footer + "\nfunc Dynamic() int {\n\treturn 0\n}\n"
+	reflective = strings.Replace(reflective, "package shop\n", "package shop\n\nimport \"reflect\"\n\nvar _ = reflect.TypeOf\n", 1)
+	radarBranch(t, repo, "reflective", map[string]string{"invoice.go": reflective}, "call by name")
+	ref, err := AnalyzeMerge(context.Background(), repo, "main", "rupees", "reflective", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("reflect reasons: %v", ref.Analysis.Reasons)
+	if ref.Analysis.Status != AnalysisPartial || !strings.Contains(strings.Join(ref.Analysis.Reasons, "\n"), "reflect") {
+		t.Fatalf("a changed file importing reflect should make the analysis partial, got %+v", ref.Analysis)
+	}
+}
+
+func TestAnalyzeMergeIsDeterministicWhenTwoOriginsShareAHop(t *testing.T) {
+	// Price and Tax are both changed on A and both feed Subtotal, which B's
+	// new Total calls. The walk reaches Total once, and which origin it is
+	// attributed to must not depend on map iteration order.
+	pricing := "package shop\n\nfunc Price(item string) int {\n\treturn 100\n}\n\nfunc Tax(item string) int {\n\treturn 18\n}\n\nfunc Subtotal(items []string) int {\n\ttotal := 0\n\tfor _, item := range items {\n\t\ttotal += Price(item) + Tax(item)\n\t}\n\treturn total\n}\n"
+	repo := radarRepo(t, map[string]string{"pricing.go": pricing, "invoice.go": radarBaseInvoice})
+	rupees := strings.Replace(pricing, "return 100", "return 1", 1)
+	rupees = strings.Replace(rupees, "return 18", "return 0", 1)
+	radarBranch(t, repo, "rupees", map[string]string{"pricing.go": rupees}, "pricing in rupees")
+	total := radarBaseInvoice + "\nfunc Total(items []string) int {\n\treturn Subtotal(items)\n}\n"
+	radarBranch(t, repo, "total", map[string]string{"invoice.go": total}, "add total")
+
+	var first string
+	for run := 0; run < 6; run++ {
+		report, err := AnalyzeMerge(context.Background(), repo, "main", "rupees", "total", 2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		encoded, err := json.Marshal(report.Conflicts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := string(encoded)
+		if run == 0 {
+			first = got
+			if len(report.Conflicts) != 1 || report.Conflicts[0].Changed.Name != "Price" {
+				t.Fatalf("expected one finding attributed to the alphabetically first origin Price, got %s", got)
+			}
+			continue
+		}
+		if got != first {
+			t.Fatalf("run %d differs from run 0:\n%s\n%s", run, got, first)
+		}
+	}
+}
+
+func TestAnalyzeMergeSkipsDocumentsUnlessIncluded(t *testing.T) {
+	repo := radarRepo(t, map[string]string{"pricing.go": radarBasePricing, "invoice.go": radarBaseInvoice})
+	radarBranch(t, repo, "rupees", map[string]string{"pricing.go": radarRupees}, "pricing in rupees")
+	radarBranch(t, repo, "docs", map[string]string{"PRICING.rst": "Pricing\n=======\n\nCall Price to get the amount in paise.\n"}, "document pricing")
+
+	report, err := AnalyzeMerge(context.Background(), repo, "main", "rupees", "docs", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Conflicts) != 0 {
+		t.Fatalf("a document mentioning a name is not a code dependency by default, got %+v", report.Conflicts)
+	}
+
+	included, err := AnalyzeMergeWithOptions(context.Background(), repo, "main", "rupees", "docs", 2, MergeOptions{IncludeDocs: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(included.Conflicts) != 1 || included.Conflicts[0].Consumer == nil || included.Conflicts[0].Consumer.Kind != "document" {
+		t.Fatalf("with documents included the mention should be reported, got %+v", included.Conflicts)
+	}
+	c := included.Conflicts[0]
+	t.Logf("document evidence notes: %v", c.EvidenceNotes)
+	if c.Evidence != EvidenceHeuristic || !strings.Contains(strings.Join(c.EvidenceNotes, "\n"), "document") {
+		t.Fatalf("a hop through a document is heuristic and must say so, got %q %v", c.Evidence, c.EvidenceNotes)
+	}
+}
+
+func TestAnalyzeMergeMarksUnparsedFileHeuristic(t *testing.T) {
+	repo := radarRepo(t, map[string]string{"pricing.go": radarBasePricing, "invoice.go": radarBaseInvoice})
+	radarBranch(t, repo, "rupees", map[string]string{"pricing.go": radarRupees}, "pricing in rupees")
+	// Total is intact; the syntax error is further down the same file, so the
+	// parser recovers Total but the file as a whole did not parse.
+	broken := radarBaseInvoice + "\nfunc Total(items []string) int {\n\treturn Price(items[0])\n}\n\nfunc Broken( {\n"
+	radarBranch(t, repo, "broken", map[string]string{"invoice.go": broken}, "half-written")
+
+	report, err := AnalyzeMerge(context.Background(), repo, "main", "rupees", "broken", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Conflicts) != 1 || report.Conflicts[0].Consumer == nil || report.Conflicts[0].Consumer.Name != "Total" {
+		t.Fatalf("expected the recovered Total to be found, got %+v", report.Conflicts)
+	}
+	c := report.Conflicts[0]
+	t.Logf("unparsed evidence notes: %v", c.EvidenceNotes)
+	if c.Evidence != EvidenceHeuristic || !strings.Contains(strings.Join(c.EvidenceNotes, "\n"), "file did not parse") {
+		t.Fatalf("a finding through an unparsed file must be heuristic and say the file did not parse, got %q %v", c.Evidence, c.EvidenceNotes)
+	}
+	if report.Analysis.Status != AnalysisPartial {
+		t.Fatalf("analysis should be partial, got %+v", report.Analysis)
+	}
+}
+
+func TestVerifyMergeReproducesTheBreak(t *testing.T) {
+	repo := radarRepo(t, map[string]string{"pricing.go": radarBasePricing, "invoice.go": radarBaseInvoice})
+	radarBranch(t, repo, "rupees", map[string]string{"pricing.go": radarRupees}, "pricing in rupees")
+	invoiceTest := "package shop\n\nimport \"testing\"\n\nfunc TestInvoice(t *testing.T) {\n\tif got := Invoice([]string{\"a\", \"b\"}); got != 200 {\n\t\tt.Fatalf(\"expected 200 paise, got %d\", got)\n\t}\n}\n"
+	radarBranch(t, repo, "invoicing", map[string]string{"invoice.go": radarInvoicing, "invoice_test.go": invoiceTest}, "invoicing on paise")
+
+	v, err := VerifyMerge(context.Background(), repo, "rupees", "invoicing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("verification: %+v", v)
+	if v.Status != VerificationReproduced {
+		t.Fatalf("the merged tree does not compile, so the tests must fail: got %+v", v)
+	}
+	if v.Runner != "go test ./..." || len(v.Output) == 0 || v.Tree == "" {
+		t.Fatalf("a reproduced break must carry the runner, the tree and the failing output, got %+v", v)
+	}
+	if out, _ := exec.Command("git", "-C", repo, "worktree", "list").Output(); strings.Count(strings.TrimSpace(string(out)), "\n") != 0 {
+		t.Fatalf("scratch worktree was not removed:\n%s", out)
+	}
+}
+
+func TestVerifyMergePassesWhenTestsStillPass(t *testing.T) {
+	repo := radarRepo(t, map[string]string{"pricing.go": radarBasePricing, "invoice.go": radarBaseInvoice})
+	radarBranch(t, repo, "rupees", map[string]string{"pricing.go": radarRupees}, "pricing in rupees")
+	footer := radarBaseInvoice + "\nfunc Footer() string {\n\treturn \"thanks\"\n}\n"
+	footerTest := "package shop\n\nimport \"testing\"\n\nfunc TestFooter(t *testing.T) {\n\tif Footer() != \"thanks\" {\n\t\tt.Fatal(\"footer\")\n\t}\n}\n"
+	radarBranch(t, repo, "footer", map[string]string{"invoice.go": footer, "invoice_test.go": footerTest}, "add footer")
+
+	v, err := VerifyMerge(context.Background(), repo, "rupees", "footer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.Status != VerificationPassed || !strings.Contains(v.Note, "potential") {
+		t.Fatalf("passing tests keep the findings potential and must say so, got %+v", v)
+	}
+}
+
+func TestVerifyMergeUnavailableWithoutRunner(t *testing.T) {
+	repo := t.TempDir()
+	initRepo(t, repo)
+	writeFile(t, repo, "pricing.py", "def price(item):\n    return 100\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-q", "-m", "base")
+	git(t, repo, "branch", "-M", "main")
+	radarBranch(t, repo, "rupees", map[string]string{"pricing.py": "def price(item):\n    return 1.0\n"}, "rupees")
+	radarBranch(t, repo, "invoicing", map[string]string{"invoice.py": "from pricing import price\n\ndef invoice(items):\n    return sum(price(i) for i in items)\n"}, "invoicing")
+
+	v, err := VerifyMerge(context.Background(), repo, "rupees", "invoicing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.Status != VerificationUnavailable || !strings.Contains(v.Note, "no supported test runner") {
+		t.Fatalf("a repository without a known test runner must say verification is unavailable, got %+v", v)
+	}
+	if len(v.Manual) == 0 || !strings.Contains(strings.Join(v.Manual, "\n"), "git merge-tree --write-tree rupees invoicing") {
+		t.Fatalf("the manual path must be printed, got %+v", v.Manual)
+	}
+}
+
+func TestDescribeRefsCapsTheList(t *testing.T) {
+	refs := []EntityRef{
+		{Path: "a.go", Kind: "function", Name: "op"},
+		{Path: "b.go", Kind: "method", Name: "T.op"},
+		{Path: "c.go", Kind: "field", Name: "S.op"},
+		{Path: "d.go", Kind: "function", Name: "op"},
+		{Path: "e.go", Kind: "function", Name: "op"},
+	}
+	got := describeRefs(refs)
+	if !strings.HasSuffix(got, "and 2 more") || strings.Contains(got, "d.go") {
+		t.Fatalf("long definition lists must be capped at three with a count, got %q", got)
+	}
+	if short := describeRefs(refs[:2]); strings.Contains(short, "more") {
+		t.Fatalf("short lists are printed in full, got %q", short)
+	}
+}
+
+func TestAnalyzeMergeIgnoresIdenticalChangesOnBothSides(t *testing.T) {
+	// One branch contains the other's commit (or both agents wrote the same
+	// file byte for byte). Git merges that cleanly and only one text exists,
+	// so it is not a place where two intents collide.
+	repo := radarRepo(t, map[string]string{"pricing.go": radarBasePricing})
+	note := "Pricing\n=======\n\nPrices are now in rupees.\n"
+	radarBranch(t, repo, "rupees", map[string]string{"pricing.go": radarRupees, "NOTE.rst": note}, "pricing in rupees")
+	radarBranch(t, repo, "rupees-plus-docs", map[string]string{"pricing.go": radarRupees, "NOTE.rst": note, "README.rst": "Shop\n====\n"}, "same change plus a readme")
+
+	report, err := AnalyzeMerge(context.Background(), repo, "main", "rupees", "rupees-plus-docs", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Conflicts) != 0 {
+		t.Fatalf("identical changes on both sides are not conflicts, got %+v", report.Conflicts)
 	}
 }
